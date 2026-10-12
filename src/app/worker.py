@@ -19,7 +19,7 @@ import logging
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 
 from src.engine import QCError, QCOptions, build_docx_report, run_qc
 from src.utils.progress import Cancelled
@@ -97,7 +97,9 @@ class CheckRunner(QObject):
         self._job.progress.connect(self.progress)
         for signal, relay in ((self._job.finished, self.finished), (self._job.failed, self.failed),
                               (self._job.cancelled, self.cancelled)):
-            signal.connect(self._thread.quit)
+            # Direct: quit() is thread-safe, and a queued call would wait for the main thread's event
+            # loop, so wait() (on Quit) would block forever.
+            signal.connect(self._thread.quit, Qt.ConnectionType.DirectConnection)
             signal.connect(relay)
         self._thread.finished.connect(self._cleanup)
         self._thread.start()
@@ -112,8 +114,11 @@ class CheckRunner(QObject):
         return thread.wait(msecs) if thread is not None else True
 
     def _cleanup(self) -> None:
-        if self._job is not None:
-            self._job.deleteLater()
-        if self._thread is not None:
-            self._thread.deleteLater()
+        thread, job = self._thread, self._job
         self._job = self._thread = None
+        if thread is not None:
+            # QThread.finished is emitted just before the thread really ends. Python frees the
+            # QThread when the last reference goes, and freeing a running QThread aborts the
+            # process, so let it end first (a few milliseconds at most).
+            thread.wait()
+        del job, thread

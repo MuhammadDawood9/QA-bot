@@ -119,6 +119,17 @@ def fake(tmp_path, monkeypatch):
     return engine
 
 
+@pytest.fixture
+def runner(app, fake):
+    """A CheckRunner that is always finished before the test ends: freeing a QThread that is
+    still running aborts the whole process."""
+    r = worker.CheckRunner()
+    yield r
+    r.cancel()
+    r.wait(10_000)
+    assert wait_for(lambda: not r.busy)
+
+
 def run_and_collect(runner, video=Path("clip.mp4")):
     seen = {"progress": [], "finished": None, "failed": None, "cancelled": False}
     runner.progress.connect(lambda s, f: seen["progress"].append((s, f)))
@@ -129,8 +140,7 @@ def run_and_collect(runner, video=Path("clip.mp4")):
     return seen
 
 
-def test_worker_runs_off_the_ui_thread_and_reports_back(app, fake):
-    runner = worker.CheckRunner()
+def test_worker_runs_off_the_ui_thread_and_reports_back(app, fake, runner):
     seen = run_and_collect(runner)
     assert runner.busy
     assert wait_for(lambda: seen["finished"] is not None)
@@ -140,26 +150,23 @@ def test_worker_runs_off_the_ui_thread_and_reports_back(app, fake):
     assert wait_for(lambda: not runner.busy)
 
 
-def test_worker_failure_gives_the_engine_message(app, fake):
+def test_worker_failure_gives_the_engine_message(app, fake, runner):
     fake.fail = QCError("Video not found: clip.mp4")
-    runner = worker.CheckRunner()
     seen = run_and_collect(runner)
     assert wait_for(lambda: seen["failed"] is not None)
     assert seen["failed"] == "Video not found: clip.mp4"
 
 
-def test_worker_bug_is_caught_and_logged(app, fake, caplog):
+def test_worker_bug_is_caught_and_logged(app, fake, caplog, runner):
     fake.fail = ZeroDivisionError("oops")
-    runner = worker.CheckRunner()
     seen = run_and_collect(runner)
     assert wait_for(lambda: seen["failed"] is not None)
     assert "Unexpected error (ZeroDivisionError: oops)" in seen["failed"]
     assert "Traceback" in caplog.text or "oops" in caplog.text
 
 
-def test_worker_can_be_cancelled(app, fake):
+def test_worker_can_be_cancelled(app, fake, runner):
     fake.steps, fake.delay = 200, 0.01
-    runner = worker.CheckRunner()
     seen = run_and_collect(runner)
     assert wait_for(lambda: len(seen["progress"]) > 2)
     runner.cancel()
@@ -167,9 +174,19 @@ def test_worker_can_be_cancelled(app, fake):
     assert seen["finished"] is None
 
 
-def test_only_one_check_at_a_time(app, fake):
+def test_cancel_and_wait_end_without_the_event_loop(app, fake, runner):
+    """Quit while a check runs: cancel, then wait() blocks the main thread. The thread must
+    still end (it used to wait for a queued quit() that never came, then abort the app)."""
+    fake.steps, fake.delay = 300, 0.01
+    run_and_collect(runner)
+    assert wait_for(lambda: fake.thread is not None)
+    runner.cancel()
+    started = time.monotonic()
+    assert runner.wait(5000) and time.monotonic() - started < 2
+
+
+def test_only_one_check_at_a_time(app, fake, runner):
     fake.steps, fake.delay = 50, 0.01
-    runner = worker.CheckRunner()
     run_and_collect(runner)
     with pytest.raises(RuntimeError):
         runner.start(Path("other.mp4"), None, qc_options([]))

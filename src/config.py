@@ -16,7 +16,8 @@ DEFAULT_CONFIG = PROJECT_ROOT / "config.yaml"
 # Files the user may edit. A packaged app (PyInstaller) can't write inside itself, so on its first
 # run they're copied from the bundle into the OS data folder and read from there; the cache,
 # models and reports paths in config.yaml then also land in that folder.
-EDITABLE_FILES = ("config.yaml", "rules.yaml", "glossary.txt", "extra_words.txt", "clients", "data/examples.csv")
+EDITABLE_FILES = ("config.yaml", "rules.yaml", "glossary.txt", "extra_words.txt", "ignore.yaml", "clients",
+                  "data/examples.csv")
 
 
 def is_frozen() -> bool:

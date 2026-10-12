@@ -282,3 +282,53 @@ def test_cli_reports_a_missing_video(capsys, tmp_path):
     assert main(["--srt", str(FIXTURES / "sample_mistakes.srt"), "--video", str(tmp_path / "nope.mp4"),
                  "--no-llm"]) == 2
     assert "video not found" in capsys.readouterr().err.lower()
+
+
+# --- the one-time model download --------------------------------------------------------------
+
+def test_first_run_says_the_model_is_downloading(monkeypatch):
+    import faster_whisper
+
+    from src.audio import transcribe
+    from src.utils.progress import Stage
+
+    loads = []
+
+    class FakeModel:
+        def __init__(self, size, local_files_only=False, **kwargs):
+            loads.append(local_files_only)
+            if local_files_only:
+                raise RuntimeError("not downloaded yet")
+
+    monkeypatch.setattr(faster_whisper, "WhisperModel", FakeModel)
+    seen = []
+    stage = Stage(lambda name, f: seen.append((name, f)), None, "Transcribing audio", start=0.4, span=0.2)
+    stage(0.0)
+    ws = {"device": "cpu", "compute_type": "int8", "cpu_threads": 2, "model_size": "base"}
+    transcribe._load_model(ws, None, stage)
+    assert loads == [True, False]
+    assert [name for name, _ in seen] == ["Transcribing audio", "Downloading the speech model (one time, about 145 MB)",
+                                          "Transcribing audio"]
+    assert {f for _, f in seen} == {0.4}                                  # the bar doesn't jump
+
+
+def test_no_download_message_once_the_model_is_there(monkeypatch):
+    import faster_whisper
+
+    from src.audio import transcribe
+    from src.utils.progress import Stage
+
+    monkeypatch.setattr(faster_whisper, "WhisperModel", lambda size, **kwargs: object())
+    seen = []
+    stage = Stage(lambda name, f: seen.append(name), None, "Transcribing audio")
+    transcribe._load_model({"device": "cpu", "compute_type": "int8", "cpu_threads": 2, "model_size": "small"}, None,
+                           stage)
+    assert seen == []
+
+
+def test_download_labels():
+    from src.audio.transcribe import download_label
+
+    assert download_label("small") == "Downloading the speech model (one time, about 465 MB)"
+    assert download_label("large-v3") == "Downloading the speech model (one time, about 3.0 GB)"
+    assert download_label("custom") == "Downloading the speech model (one time)"

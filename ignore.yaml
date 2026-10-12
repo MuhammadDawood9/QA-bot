@@ -1,0 +1,20 @@
+# Flags you looked at and decided are fine: the bot stops raising them.
+#
+# Every Word report ends with "Hide a flag next time": one line per flag. Copy the line for a
+# false alarm under "ignore:" below (keep the "- " and the indentation). A flag is hidden when
+# every field of a rule matches:
+#
+#   client   client code; leave it out to apply to every client
+#   type     issue type: spelling, capitalization, punctuation, wrong_word, too_short, color_cast...
+#            (leave it out: any type)
+#   text     words in the flagged caption, any case; shorten it to the word that's fine
+#            ("Gherabel") so the rule covers every caption with it
+#   video    file name: only in that video
+#   at       time in the video ("2:04", within 2 s): one moment, e.g. a color flag
+#   note     why, for you; the bot doesn't read it
+#
+# The report's checks list says how many flags the ignore list hid, so nothing disappears silently.
+
+ignore:
+  # - {client: E2AB, type: spelling, text: "Gherabel", note: "the guest's name"}
+  # - {client: E3AC, type: color_cast, video: "Willy & Mitzie.mp4", at: "2:04", note: "sunset, meant to be warm"}

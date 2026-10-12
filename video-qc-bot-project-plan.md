@@ -767,6 +767,34 @@ Windows 10/11 and macOS (Intel, also Apple Silicon); OS-specific code only in `s
   flags, cached run 5 s). The spreadsheet has no caption-timing notes; timing can only be measured from notes added
   by hand.
 
+### Improvements 2-6 from the review (2026-10-13)
+- **Worker crash (5):** two bugs in `CheckRunner`. (a) The job's finished/failed/cancelled signals stopped the
+  thread through a queued `quit()`, delivered only by the main event loop, so `wait()` on Quit during a check
+  blocked for its whole timeout and the QThread was then freed while running, which aborts the process
+  (0xC0000409). Now a direct connection (`quit()` is thread-safe). (b) `_cleanup` dropped the last reference on
+  `finished`, which Qt emits just before the thread ends; it now waits for the thread first. Tests use a runner
+  fixture that always waits. Step 3 tests: 5/5 clean runs (were crashing on most).
+- **Ignore list (2):** `ignore.yaml` (editable file; `paths.ignore_file`), rules of client / type / text / video
+  / at (within 2 s), all given fields must match; text matching ignores case and spacing. Applied in `run_qc`
+  after all checks; hidden flags in `QCResult.hidden` and counted in the report's checks list. The Word report
+  ends with "Hide a flag next time", one ready line per flag (caption flags by their text, color and
+  no-caption flags by video and time). Tray: Edit ignore list. Broken rules are logged and skipped; a rule with
+  no condition is refused (it would hide everything). The old `data/exceptions.yaml` is free-text history and
+  isn't used.
+- **Faster color (3):** `frame_stats` rewritten per channel with OpenCV (identical numbers: largest difference 0);
+  measurement every 2nd sampled frame of a shot and faces every 4th, counted per shot (before: faces every 2nd
+  frame counted over the whole video, so a short shot could get none); cuts still at 4 fps, so short shots aren't
+  merged. COLOR_VERSION 3. Analysis 4.7-4.9x faster on del.mp4 and color_test.mp4 with the same flags (per-shot
+  values within 0.2 levels, skin hue within 1.3°); with decoding about 2x overall (~15 s per minute of 1080p).
+  Not done: 2 fps cut detection (could merge 0.5-1 s shots), 240 px measuring (clipping shares would shift),
+  skipping non-reference frames when decoding (no gain on del.mp4, which has no B-frames).
+- **Model download message (4):** `Stage.say(label)` shows a temporary label at the same progress; the Whisper
+  loader says "Downloading the speech model (one time, about N MB)" when the model isn't on disk yet. The
+  packaged app still downloads it on first use (bundling it would add 145-465 MB to the app).
+- **CI (6):** GitHub Actions, Python 3.12, ffmpeg installed: windows-latest on every push, macos-15-intel (the
+  bot's Mac is Intel) for main and manual runs only (macOS minutes cost 10x on a private repo). A clean copy of
+  the tracked files passes locally: 472 passed, 10 skipped (client data, Whisper, slow tests).
+
 ### Open questions
 - Fill `data/ground_truth.csv` and put the matching videos (`data/ground_truth_videos.csv` lists them, most useful
   first) where the evaluation can find them.

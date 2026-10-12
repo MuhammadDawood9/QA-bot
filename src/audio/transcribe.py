@@ -67,7 +67,17 @@ def read_wav(path: Path):
     return np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
 
 
-def _load_model(ws: dict, models_dir: Path | None):
+# Download sizes of the Whisper models, MB, for the one-time download message.
+MODEL_MB = {"tiny": 75, "base": 145, "small": 465, "medium": 1500, "large-v2": 3000, "large-v3": 3000}
+
+
+def download_label(model_size: str) -> str:
+    mb = MODEL_MB.get(model_size)
+    size = f"about {mb} MB" if mb is None or mb < 1000 else f"about {mb / 1000:.1f} GB"
+    return f"Downloading the speech model (one time, {size})" if mb else "Downloading the speech model (one time)"
+
+
+def _load_model(ws: dict, models_dir: Path | None, progress: Stage | None = None):
     from faster_whisper import WhisperModel   # heavy import, only when actually transcribing
 
     kwargs = dict(device=ws["device"], compute_type=ws["compute_type"], cpu_threads=ws["cpu_threads"],
@@ -75,16 +85,21 @@ def _load_model(ws: dict, models_dir: Path | None):
     try:
         return WhisperModel(ws["model_size"], local_files_only=True, **kwargs)   # no network once downloaded
     except Exception:
-        log.info("downloading Whisper model '%s' (once; base is about 145 MB, small about 465 MB)...",
-                 ws["model_size"])
-        return WhisperModel(ws["model_size"], **kwargs)
+        label = download_label(ws["model_size"])
+        log.info("%s: Whisper '%s'...", label, ws["model_size"])
+        if progress is not None:
+            progress.say(label)              # the app's tooltip and the terminal show this, not "Transcribing"
+        model = WhisperModel(ws["model_size"], **kwargs)
+        if progress is not None:
+            progress(progress.done)          # back to the stage name
+        return model
 
 
 def faster_whisper_transcriber(models_dir: Path | None = None, progress: Stage | None = None) -> Transcriber:
     progress = progress or silent()
 
     def transcribe(wav: Path, ws: dict, prompt: str) -> list[SpokenWord]:
-        model = _load_model(ws, models_dir)
+        model = _load_model(ws, models_dir, progress)
         segments, info = model.transcribe(
             read_wav(wav), language=ws["language"], beam_size=ws["beam_size"], word_timestamps=True,
             vad_filter=ws["vad_filter"], initial_prompt=prompt or None,

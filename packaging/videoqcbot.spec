@@ -18,7 +18,8 @@ MAC = sys.platform == "darwin"
 VERSION = "0.4.0"
 
 # Editable files, copied to the OS data folder on first run (src/config.py), and the images.
-datas = [(str(ROOT / name), ".") for name in ("config.yaml", "rules.yaml", "glossary.txt", "extra_words.txt")]
+datas = [(str(ROOT / name), ".") for name in ("config.yaml", "rules.yaml", "glossary.txt", "extra_words.txt",
+                                              "ignore.yaml")]
 datas += [(str(ROOT / "clients"), "clients"), (str(ROOT / "assets"), "assets")]
 if (ROOT / "data" / "examples.csv").is_file():          # real QC examples for the punctuation prompt
     datas.append((str(ROOT / "data" / "examples.csv"), "data"))

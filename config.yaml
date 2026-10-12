@@ -14,6 +14,7 @@ paths:
   glossary_file: glossary.txt
   extra_words_file: extra_words.txt   # everyday words the spell checker's list is missing
   examples_file: data/examples.csv
+  ignore_file: ignore.yaml            # flags you decided are fine (see the file)
   exceptions_file: data/exceptions.yaml
   llm_cache_file: cache/punctuation.json   # cached API answers; delete it to force a fresh review
   transcript_cache_dir: cache/transcripts  # one Whisper transcript per video (by file hash)
@@ -213,11 +214,12 @@ checks:
 #     skip: ["saturation"]          # this client's grey, desaturated look is intended
 color:
   enabled: true
-  sample_fps: 4                 # frames measured per second
+  sample_fps: 4                 # frames looked at per second (cuts are found on every one)
   cut_threshold: 0.35           # color-histogram change (0-1) that counts as a cut between shots
   min_shot_sec: 0.5
+  measure_every_n_frames: 2     # brightness and color measured on every 2nd frame of a shot (from its first)
   skin_tones: true              # find faces (YuNet model, downloaded once, 232 KB) and measure skin
-  face_every_n_frames: 2
+  face_every_n_frames: 4        # faces looked for on every 4th frame of a shot (from its first)
   skip: []                      # issue types not to report, e.g. ["saturation", "color_cast"]
   # Flags on one shot. Brightness values are 0-255; color values are Lab (neutral = 0).
   clipped_white: 0.04           # share of pure white pixels that counts as overexposed (2.5x = high)

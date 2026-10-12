@@ -21,6 +21,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
+from src.ignore import rule_line
 from src.models import SEVERITIES
 from src.report.builder import ReportData, captions_source, label
 from src.utils.timecode import format_timestamp
@@ -260,6 +261,15 @@ def write_docx(data: ReportData) -> Path:
                         fill=FLAGGED_FILL)
             else:
                 add_row(t, [format_timestamp(cap.start), str(cap.id), cap.flat_text, ""])
+
+    # Lines for ignore.yaml, so a false alarm can be hidden next time
+    if data.issues:
+        doc.add_heading("Hide a flag next time", level=1)
+        doc.add_paragraph("If a flag is a false alarm, copy its line under \"ignore:\" in ignore.yaml (right-click the "
+                          "mascot, Edit ignore list). For a word that's always fine, shorten the text to that word.")
+        t = table(doc, ["Time", "Line for ignore.yaml"], [2.2, content_cm - 2.2])
+        for issue in data.issues:
+            add_row(t, [format_timestamp(issue.timestamp), rule_line(issue, info.client, info.video)])
 
     path = data.folder / docx_name(data)
     doc.save(str(path))

@@ -155,9 +155,40 @@ def test_short_shots_are_not_compared():
 def test_cuts_split_shots():
     a, b = gradient(), gradient(low=20, high=120, tint=(40, 0, -30))
     frames = [(n * 0.25, 3.0, img) for n, img in enumerate([a] * 4 + [b] * 4 + [a] * 4)]
-    shots = analyze(iter(frames), {**SETTINGS, "sample_fps": 4})
+    shots = analyze(iter(frames), {**SETTINGS, "sample_fps": 4, "measure_every_n_frames": 1})
     assert [(s.number, s.start, s.end) for s in shots] == [(1, 0.0, 1.0), (2, 1.0, 2.0), (3, 2.0, 3.0)]
     assert all(len(s.frames) == 4 for s in shots)
+
+
+class CountingDetector:
+    """Stands in for YuNet: counts the frames it's asked about, finds no face."""
+
+    def __init__(self):
+        self.times = 0
+
+    def setInputSize(self, size):
+        pass
+
+    def detect(self, image):
+        self.times += 1
+        return None, None
+
+
+def test_every_shot_is_measured_and_searched_for_faces_from_its_first_frame():
+    a, b = gradient(), gradient(low=20, high=120, tint=(40, 0, -30))
+    # shot 1: 7 frames, shot 2: a single frame, shot 3: 3 frames
+    frames = [(n * 0.25, 3.0, img) for n, img in enumerate([a] * 7 + [b] + [a] * 3)]
+    detector = CountingDetector()
+    shots = analyze(iter(frames), {**SETTINGS, "sample_fps": 4, "min_shot_sec": 0.2, "measure_every_n_frames": 2,
+                                   "face_every_n_frames": 4}, face_detector=detector)
+    assert [len(s.frames) for s in shots] == [4, 1, 2]                 # frames 0, 2, 4, 6 | 0 | 0, 2
+    assert [f.t for f in shots[1].frames] == [1.75]                     # the one-frame shot is still measured
+    assert detector.times == 2 + 1 + 1                                   # frames 0 and 4 | 0 | 0
+
+
+def test_sampling_settings_are_in_the_config():
+    assert SETTINGS["sample_fps"] == 4 and SETTINGS["measure_every_n_frames"] == 2
+    assert SETTINGS["face_every_n_frames"] == 4
 
 
 # --- report ----------------------------------------------------------------------------------

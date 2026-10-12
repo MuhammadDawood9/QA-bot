@@ -22,6 +22,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Sequence
 
+from src import ignore
 from src.audio.transcribe import get_transcript
 from src.checks import CHECKS
 from src.checks.context import CheckContext
@@ -82,6 +83,7 @@ class QCResult(list):
         super().__init__(issues)
         self.video, self.srt, self.captions = video, srt, captions
         self.config, self.client, self.context, self.checks = config, client, context, checks
+        self.hidden: list[Issue] = []           # flags ignore.yaml hid
 
     @property
     def issues(self) -> list[Issue]:
@@ -158,8 +160,26 @@ def run_qc(video_path: str | Path | None, client: str | None = None,
         raise QCError(f"{type(exc).__name__}: {exc}") from exc
 
     issues = sorted(issues, key=lambda i: (i.timestamp, i.caption_id))
-    return QCResult(issues, video=video, srt=srt, captions=captions, config=config, client=client_data,
-                    context=context, checks=check_status_lines(context, video, options))
+    issues, hidden = _ignored(issues, config, client_data, video)
+    checks = check_status_lines(context, video, options)
+    if hidden:
+        checks.append(f"Ignore list: {len(hidden)} flag{'s' if len(hidden) != 1 else ''} hidden "
+                      f"({ignore.ignore_file(config).name})")
+    result = QCResult(issues, video=video, srt=srt, captions=captions, config=config, client=client_data,
+                      context=context, checks=checks)
+    result.hidden = hidden
+    return result
+
+
+def _ignored(issues: list[Issue], config: dict, client: dict, video: Path | None) -> tuple[list[Issue], list[Issue]]:
+    """Issues minus the ones ignore.yaml hides; (kept, hidden)."""
+    rules = ignore.load_rules(ignore.ignore_file(config))
+    if not rules:
+        return issues, []
+    kept, hidden = ignore.apply(issues, rules, client.get("client"), video)
+    if hidden:
+        log.info("ignore list hid %d flag(s)", len(hidden))
+    return kept, hidden
 
 
 def _stages(progress_cb, cancel_event) -> dict[str, Stage]:

@@ -31,12 +31,23 @@ class Stage:
     start: float = 0.0          # where this stage begins in the overall run, 0..1
     span: float = 1.0           # how much of the overall run it takes
 
+    done: float = 0.0           # the last fraction reported
+
     def __call__(self, fraction: float = 0.0) -> None:
         """Report that this stage is `fraction` done (0..1). Raises Cancelled when asked to stop."""
         self.check()
+        self.done = min(1.0, max(0.0, fraction))
         if self.callback is not None:
-            fraction = min(1.0, max(0.0, fraction))
-            self.callback(self.name, round(min(1.0, self.start + self.span * fraction), 4))
+            self.callback(self.name, self._overall())
+
+    def say(self, label: str) -> None:
+        """Show `label` instead of the stage name for a moment (a one-time download, say), at the
+        same progress. The next normal report brings the stage name back."""
+        if self.callback is not None:
+            self.callback(label, self._overall())
+
+    def _overall(self) -> float:
+        return round(min(1.0, self.start + self.span * self.done), 4)
 
     def check(self) -> None:
         if self.cancel_event is not None and self.cancel_event.is_set():

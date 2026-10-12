@@ -145,6 +145,26 @@ Severity tells you how sure the bot is that it's a real mistake: `high` (almost 
 python -m pytest
 ```
 
+GitHub runs them too (`.github/workflows/tests.yml`): on Windows for every push, and on an Intel Mac for
+`main` or when started by hand (Actions → Tests → Run workflow). macOS minutes count 10x on a private
+repository, hence the limit. Tests that need client data, the Whisper model or real videos skip themselves there.
+
+### 4. Hide false alarms (the ignore list)
+
+A flag you've decided is fine can be hidden from then on. Every Word report ends with **Hide a flag next
+time**: one line per flag. Copy the line of a false alarm under `ignore:` in `ignore.yaml` (right-click the
+mascot → *Edit ignore list*):
+
+```yaml
+ignore:
+  - {client: E2AB, type: spelling, text: "Gherabel"}                         # this name, in every E2AB video
+  - {client: E3AC, type: color_cast, video: "Willy & Mitzie.mp4", at: "2:04"}  # one moment of one video
+```
+
+Every field given must match (`client`, `type`, `text` in the caption, `video`, `at` within 2 s); a field left
+out matches anything. Shorten `text` to the word that's fine to cover every caption with it. The report's checks
+list says how many flags were hidden, so nothing disappears silently.
+
 ## Desktop app
 
 A small mascot that floats on top of everything. Drop a video on it, and it checks the video in the
@@ -430,6 +450,9 @@ is changed.
 
 ### Captions vs audio (Whisper)
 
+The first check downloads the speech model once (base: about 145 MB, small: about 465 MB). Meanwhile the
+mascot's tooltip and the terminal say "Downloading the speech model (one time, ...)" instead of "Transcribing".
+
 ```
 python -m src.main --srt captions.srt --video video.mp4 --client E3JB
 ```
@@ -497,7 +520,9 @@ from the graphics ("Elizabeth Meyer" under "ELIZABETH MAIER").
 
 Runs whenever a video is given (`--no-color` skips it). The video is cut into shots where the
 colors jump, and every shot is measured 4 times a second, leaving out the client's caption region
-(white caption text would otherwise count as blown highlights). Black screens are skipped.
+(white caption text would otherwise count as blown highlights). Black screens are skipped. Cuts are
+looked for on every sampled frame; brightness and color are measured on every 2nd frame of a shot and faces
+on every 4th, both counted from the shot's first frame (`measure_every_n_frames`, `face_every_n_frames`).
 
 | Issue type | What it means | From the QC notes |
 |---|---|---|
@@ -510,7 +535,7 @@ colors jump, and every shot is measured 4 times a second, leaving out the client
 | `skin_tone` | Skin on detected faces too pink, too yellow/green, too orange, or grey | "skin color yellow" (43) |
 | `shot_mismatch` | Skin tone jumps from the previous shot with a face, or a shot's tint/saturation is far from the rest of the video | "alien to the rest of footage", "color change when the camera changes" |
 
-Pixels are converted to RGB using the video's own color tags; untagged HD video is read as BT.709 and limited range, as players do. **HDR (PQ, HLG) and BT.2020 videos are not measured**, because every threshold assumes SDR Rec.709; the report says so. Measuring takes about 30 s per minute of 1080p video.
+Pixels are converted to RGB using the video's own color tags; untagged HD video is read as BT.709 and limited range, as players do. **HDR (PQ, HLG) and BT.2020 videos are not measured**, because every threshold assumes SDR Rec.709; the report says so. Measuring takes about 15 s per minute of 1080p video, most of it decoding the video.
 
 Faces are found with OpenCV's YuNet model (232 KB, downloaded once into `models/`, checksum checked).
 All thresholds are in the `color:` block of `config.yaml`. These are measurements, not taste: a

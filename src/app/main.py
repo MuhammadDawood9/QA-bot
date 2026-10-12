@@ -28,6 +28,7 @@ from src.app.mascot import MascotWindow
 from src.app.settings import APP_NAME, Settings, log_dir
 from src.app.worker import CheckRunner
 from src.config import PROJECT_ROOT, is_frozen, load_config
+from src import ignore
 from src.engine import known_clients
 from src.platform import current as platform
 from src.utils.system import MissingToolError, find_ffmpeg
@@ -138,6 +139,7 @@ class CompanionApp:
         last = self.settings.get("last_report")
         menu.addAction("Open last report", self.open_last_report).setEnabled(bool(last) and Path(last).is_file())
         menu.addAction("Open reports folder", self.open_reports_folder)
+        menu.addAction("Edit ignore list", self.open_ignore_list)
         menu.addAction("Settings...", self.open_settings)
         login = menu.addAction("Start at login")
         login.setCheckable(True)
@@ -260,6 +262,15 @@ class CompanionApp:
     def open_reports_folder(self) -> None:
         self.reports_dir.mkdir(parents=True, exist_ok=True)
         open_path(self.reports_dir)
+
+    def open_ignore_list(self) -> None:
+        """ignore.yaml in the default editor (created empty if it was deleted)."""
+        path = ignore.ignore_file(self.config)
+        if not path.is_file():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("# Flags you decided are fine; copy lines from a report's \"Hide a flag next time\".\n"
+                            "ignore:\n", encoding="utf-8")
+        open_path(path)
 
     def open_settings(self) -> None:
         SettingsDialog(self.settings, self.default_reports_dir).exec()

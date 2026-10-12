@@ -3,7 +3,8 @@
     shots = read_color(video, settings, caption_region, cache_dir, models_dir)
     issues = color_issues(shots, settings)
 
-1. Frames are sampled (sample_fps, default 4 a second) and shrunk to 480 px wide.
+1. Frames are sampled (sample_fps, default 4 a second) and shrunk to 480 px wide. Cuts are found
+   on every sample; measurements and faces on every n-th frame of each shot.
 2. A new shot starts where the color histogram jumps (a cut).
 3. Every sampled frame is measured, leaving out the caption region (white caption text would
    otherwise count as blown-out highlights):
@@ -44,7 +45,7 @@ from src.utils.timecode import format_timestamp
 
 log = logging.getLogger("qcbot.color")
 
-COLOR_VERSION = "2"     # 2: untagged HD read as BT.709
+COLOR_VERSION = "3"     # 2: untagged HD read as BT.709; 3: measurements and faces counted per shot
 ANALYSIS_WIDTH = 480
 
 YUNET_URL = ("https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/"
@@ -100,16 +101,23 @@ def frame_stats(t: float, rgb, mask, skin: tuple[float, float] | None = None) ->
     import cv2
     import numpy as np
 
-    if not mask.any():
-        mask = np.ones(rgb.shape[:2], dtype=bool)
-    px = rgb[mask].astype(np.float32)
-    luma = 0.2126 * px[:, 0] + 0.7152 * px[:, 1] + 0.0722 * px[:, 2]
-    p2, p50, p98 = np.percentile(luma, [2, 50, 98])
-    clipped = px.max(axis=1) >= 250
+    # One channel at a time, in OpenCV where it can: masking or reducing (N, 3) float arrays was
+    # most of the color pass's time. Same numbers as before.
+    whole = mask is None or mask.all() or not mask.any()
 
-    lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB)[mask].astype(np.float32)
-    L, a, b = lab[:, 0] * (100 / 255), lab[:, 1] - 128, lab[:, 2] - 128
-    chroma = np.sqrt(a * a + b * b)
+    def pick(plane):
+        return plane.reshape(-1) if whole else plane[mask]
+
+    r, g, b8 = cv2.split(rgb)
+    luma = pick(cv2.transform(rgb.astype(np.float32), np.array([[0.2126, 0.7152, 0.0722]], dtype=np.float32)))
+    p2, p50, p98 = np.percentile(luma, [2, 50, 98])
+    clipped = pick(cv2.max(cv2.max(r, g), b8)) >= 250
+
+    L8, a8, bb8 = cv2.split(cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB))
+    L = pick(L8).astype(np.float32) * (100 / 255)
+    a = pick(a8).astype(np.float32) - 128
+    b = pick(bb8).astype(np.float32) - 128
+    chroma = cv2.magnitude(a, b).reshape(-1)
     # Where a color cast shows: near-neutral pixels (whites, greys) should have a* = b* = 0. A strong
     # cast leaves none near neutral; then the brightest unclipped pixels (where whites usually are).
     neutral = (chroma < 12) & (L > 25) & (L < 95)
@@ -191,9 +199,13 @@ def analyze(frames: Iterator[tuple[float, float, object]], settings: dict, capti
     progress = progress or silent()
     cut_threshold = float(settings.get("cut_threshold", 0.35))
     min_shot = float(settings.get("min_shot_sec", 0.5))
+    # Cuts are looked for on every sampled frame (cheap); the measurements, and faces even more so,
+    # on every n-th frame of each shot, counted from the shot's first frame so every shot is
+    # measured and has its faces looked for at least once.
+    measure_every = max(1, int(settings.get("measure_every_n_frames", 1)))
     face_every = max(1, int(settings.get("face_every_n_frames", 2)))
     shots: list[Shot] = []
-    prev_hist, mask, n, last_t = None, None, 0, 0.0
+    prev_hist, mask, in_shot, last_t = None, None, 0, 0.0
     for t, duration, image in frames:
         progress(t / duration if duration else 0.0)
         h, w = image.shape[:2]
@@ -206,9 +218,11 @@ def analyze(frames: Iterator[tuple[float, float, object]], settings: dict, capti
             if shots:
                 shots[-1].end = round(t, 3)
             shots.append(Shot(number=len(shots) + 1, start=round(t, 3), end=round(t, 3)))
-        skin = skin_of_faces(image, face_detector) if n % face_every == 0 else None
-        shots[-1].frames.append(frame_stats(t, image, mask, skin))
-        prev_hist, n, last_t = hist, n + 1, t
+            in_shot = 0
+        if in_shot % measure_every == 0:
+            skin = skin_of_faces(image, face_detector) if in_shot % face_every == 0 else None
+            shots[-1].frames.append(frame_stats(t, image, mask, skin))
+        prev_hist, in_shot, last_t = hist, in_shot + 1, t
     if shots:
         step = 1.0 / float(settings.get("sample_fps", 4))
         shots[-1].end = round(last_t + step, 3)
@@ -411,7 +425,8 @@ def read_color(video: Path, settings: dict, caption_region: dict | None = None, 
     video = Path(video)
     if not video.is_file():
         raise FileNotFoundError(f"video not found: {video}")
-    key_settings = {k: settings.get(k) for k in ("sample_fps", "cut_threshold", "min_shot_sec", "face_every_n_frames")}
+    key_settings = {k: settings.get(k) for k in ("sample_fps", "cut_threshold", "min_shot_sec", "face_every_n_frames",
+                                                  "measure_every_n_frames")}
     key = text_hash(COLOR_VERSION, json.dumps(key_settings, sort_keys=True), json.dumps(caption_region, sort_keys=True))[:10]
     cache_file = Path(cache_dir) / f"{file_sha256(video)[:16]}-{key}.json" if cache_dir is not None else None
     if cache_file is not None and cache_file.is_file():

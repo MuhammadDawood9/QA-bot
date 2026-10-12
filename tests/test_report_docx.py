@@ -59,6 +59,7 @@ def test_word_document_structure(tmp_path):
         ("Heading 1", "Summary"),
         ("Heading 1", "Issues"),
         ("Heading 1", "Appendix: all captions"),
+        ("Heading 1", "Hide a flag next time"),
     ]
     text = "\n".join(p.text for p in doc.paragraphs)
     assert "Client: E3JB" in text and "Rules version: 2026-10-12" in text
@@ -68,7 +69,7 @@ def test_word_document_structure(tmp_path):
 
 def test_tables(tmp_path):
     _, doc = docx_of(make(tmp_path))
-    summary, issues, appendix = doc.tables
+    summary, issues, appendix, ignore_lines = doc.tables
     assert [c.text for c in summary.rows[0].cells] == ["Issue type", "High", "Medium", "Low", "Total"]
     assert [c.text for c in summary.rows[-1].cells] == ["All", "1", "1", "1", "3"]
     assert [c.text for c in issues.rows[0].cells] == ["Time", "Screenshot", "Original text", "What's wrong",
@@ -78,13 +79,15 @@ def test_tables(tmp_path):
     assert first[0] == "00:02.100" and first[1] == "(no video)" and first[2] == "We need to to talk"
     assert first[3].startswith("Extra word (audio)  high") and first[5] == "1.00"    # worst first
     assert len(appendix.rows) == 1 + len(CAPTIONS)
+    assert len(ignore_lines.rows) == 1 + len(ISSUES)
+    assert ignore_lines.rows[1].cells[1].text.startswith("- {client: E3JB, type: ")
     for t in doc.tables:                                   # header rows repeat on every page
         assert t.rows[0]._tr.trPr.find(qn("w:tblHeader")) is not None
 
 
 def test_flagged_rows_are_bold_and_shaded(tmp_path):
     _, doc = docx_of(make(tmp_path))
-    appendix = doc.tables[-1]
+    appendix = doc.tables[2]
     flagged, plain = appendix.rows[2], appendix.rows[1]
     assert all(r.bold for r in flagged.cells[2].paragraphs[0].runs)
     assert flagged.cells[0]._tc.tcPr.find(qn("w:shd")).get(qn("w:fill")) == "FFF2CC"
