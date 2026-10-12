@@ -102,3 +102,14 @@ class _Objc:
         send = prototype(("objc_msgSend", self._lib))
         result = send(receiver, ctypes.c_void_p(self._lib.sel_registerName(selector.encode())), *args)
         return ctypes.c_void_p(result) if restype is ctypes.c_void_p else result
+
+
+def ffmpeg_install_help() -> str:
+    return ("ffmpeg isn't installed, so videos can't be read.\n\n"
+            "To install it:\n"
+            "1. Open Terminal (Cmd-Space, type Terminal).\n"
+            "2. If you don't have Homebrew yet, install it from https://brew.sh\n"
+            "3. Run:  brew install ffmpeg\n"
+            "4. Quit and restart Video QC Bot.\n\n"
+            "If it's installed somewhere unusual, put the full path to ffmpeg in "
+            "machine.ffmpeg_path in config.yaml.")

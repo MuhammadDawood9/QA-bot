@@ -23,6 +23,14 @@ APP_NAME = "VideoQCBot"
 
 DEFAULTS: dict = {
     "window": {"x": None, "y": None},       # the mascot's position; None = bottom-right of the main screen
+    "last_client": None,                    # client code chosen last time ("E8D"), None = default rules
+    "guess_client": True,                   # take the client from the file name when it has a code in it
+    "disabled_checks": ["punctuation"],     # check keys switched off (src/app/choices.py CHECK_TOGGLES)
+    "reports_dir": None,                    # None = reports/ in the project (config.yaml report.output_dir)
+    "open_report": True,                    # open the Word report when a check finishes
+    "notifications": True,                  # desktop notification when a check finishes or fails
+    "last_report": None,
+    "last_folder": None,                    # where the file picker opens
 }
 
 
@@ -51,6 +59,9 @@ class Settings:
             return
         if isinstance(stored, dict):
             for key, value in stored.items():
+                if key in DEFAULTS and DEFAULTS[key] is not None and not isinstance(value, type(DEFAULTS[key])):
+                    log.warning("setting %r has the wrong type in %s; using the default", key, self.path)
+                    continue
                 if isinstance(value, dict) and isinstance(self.data.get(key), dict):
                     self.data[key].update(value)
                 else:
@@ -65,6 +76,14 @@ class Settings:
             os.replace(tmp, self.path)
         except OSError as exc:
             log.warning("couldn't save settings to %s: %s", self.path, exc)
+
+    def get(self, key: str):
+        return self.data.get(key, DEFAULTS.get(key))
+
+    def set(self, key: str, value, save: bool = True) -> None:
+        self.data[key] = value
+        if save:
+            self.save()
 
     @property
     def window_position(self) -> tuple[int, int] | None:

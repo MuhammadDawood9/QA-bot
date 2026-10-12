@@ -32,3 +32,13 @@ def tray_icon(assets_dir: Path):
         if path.is_file():
             icon.addFile(str(path))
     return icon
+
+
+def ffmpeg_install_help() -> str:
+    return ("ffmpeg isn't installed, so videos can't be read.\n\n"
+            "To install it:\n"
+            "1. Open PowerShell (Windows key, type PowerShell).\n"
+            "2. Run:  winget install ffmpeg\n"
+            "3. Quit and restart Video QC Bot.\n\n"
+            "If it's installed somewhere unusual, put the full path to ffmpeg.exe in "
+            "machine.ffmpeg_path in config.yaml.")

@@ -1,19 +1,24 @@
 """The floating mascot: a small frameless, transparent, always-on-top window you can drag anywhere.
 
-States: idle, working, done (with a badge showing the issue count), error. Its position is
-saved when you let go after dragging and restored at the next launch, pulled back onto a screen
-if that screen is gone (a laptop undocked from its monitor).
+States: idle, working (with a progress ring), done (with a badge showing the issue count), error.
+Its position is saved when you let go after dragging and restored at the next launch, pulled back
+onto a screen if that screen is gone (a laptop undocked from its monitor).
+
+Drop video files on it (files_dropped), or click it without dragging (clicked).
 """
 
 from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
+from pathlib import Path
+
+from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
 from src.app.assets import STATES, mascot_icons
+from src.app.choices import videos_in
 from src.app.settings import Settings
 from src.platform import current as platform
 
@@ -31,6 +36,8 @@ def badge_text(count: int) -> str:
 class MascotWindow(QWidget):
     state_changed = Signal(str)
     moved_by_user = Signal(QPoint)
+    clicked = Signal()                    # a left click that wasn't a drag
+    files_dropped = Signal(list)          # list[Path] of the video files dropped on it
 
     def __init__(self, settings: Settings, icons: dict | None = None):
         super().__init__(None, platform.floating_window_flags())
@@ -41,7 +48,10 @@ class MascotWindow(QWidget):
         self._press_offset: QPoint | None = None
         self._press_global: QPoint | None = None
         self._dragging = False
+        self.progress: float | None = None            # 0..1 while working
+        self._drop_hover = False
 
+        self.setAcceptDrops(True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
@@ -57,6 +67,8 @@ class MascotWindow(QWidget):
         if state not in STATES:
             raise ValueError(f"unknown mascot state {state!r}; expected one of {STATES}")
         self.state, self.count = state, (count if state == "done" else None)
+        if state != "working":
+            self.progress = None
         self.setToolTip({"idle": "Video QC Bot", "working": "Checking...",
                          "done": f"Done: {count} issue{'s' if count != 1 else ''}" if count is not None else "Done",
                          "error": "Something went wrong"}[state])
@@ -107,8 +119,14 @@ class MascotWindow(QWidget):
             painter.drawPixmap(QRect(0, 0, SIZE, SIZE), pixmap)
         else:
             self._paint_fallback(painter)
+        if self.state == "working" and self.progress is not None:
+            self._paint_progress(painter, self.progress)
         if self.state == "done" and self.count is not None:
             self._paint_badge(painter, badge_text(self.count))
+        if self._drop_hover:
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor("#2E7DF6"), 4, Qt.PenStyle.DashLine))
+            painter.drawRoundedRect(QRectF(3, 3, SIZE - 6, SIZE - 6), 26, 26)
         painter.end()
 
     def _paint_fallback(self, painter: QPainter) -> None:
@@ -119,6 +137,20 @@ class MascotWindow(QWidget):
         painter.drawEllipse(QRect(8, 8, SIZE - 16, SIZE - 16))
         painter.setPen(QColor("white"))
         painter.drawText(QRect(0, 0, SIZE, SIZE), Qt.AlignmentFlag.AlignCenter, self.state)
+
+    def set_progress(self, stage: str, fraction: float) -> None:
+        """While working: a ring around the face and the stage in the tooltip."""
+        self.progress = min(1.0, max(0.0, fraction))
+        self.setToolTip(f"{stage}... {self.progress:.0%}\nRight-click to cancel")
+        self.update()
+
+    def _paint_progress(self, painter: QPainter, fraction: float) -> None:
+        rect = QRectF(4, 4, SIZE - 8, SIZE - 8)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor(255, 255, 255, 170), 6))
+        painter.drawArc(rect, 0, 360 * 16)
+        painter.setPen(QPen(QColor("#2E7DF6"), 6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawArc(rect, 90 * 16, -int(360 * 16 * fraction))      # clockwise from the top
 
     def _paint_badge(self, painter: QPainter, text: str) -> None:
         font = QFont(painter.font())
@@ -158,9 +190,42 @@ class MascotWindow(QWidget):
             if self._dragging:
                 self.remember_position()
                 self.moved_by_user.emit(self.pos())
+            else:
+                self.clicked.emit()
             self._press_offset = self._press_global = None
             self._dragging = False
             self.setCursor(Qt.CursorShape.OpenHandCursor)
             event.accept()
         else:
             super().mouseReleaseEvent(event)
+
+    # --- dropping files ------------------------------------------------------------------
+
+    @staticmethod
+    def _dropped_paths(event) -> list[Path]:
+        mime = event.mimeData()
+        if not mime.hasUrls():
+            return []
+        return [Path(url.toLocalFile()) for url in mime.urls() if url.isLocalFile()]
+
+    def dragEnterEvent(self, event) -> None:
+        if videos_in(self._dropped_paths(event)):
+            event.acceptProposedAction()
+            self._drop_hover = True
+            self.update()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event) -> None:
+        self._drop_hover = False
+        self.update()
+
+    def dropEvent(self, event) -> None:
+        self._drop_hover = False
+        self.update()
+        videos = videos_in(self._dropped_paths(event))
+        if videos:
+            event.acceptProposedAction()
+            self.files_dropped.emit(videos)
+        else:
+            event.ignore()

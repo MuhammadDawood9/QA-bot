@@ -145,14 +145,33 @@ Severity tells you how sure the bot is that it's a real mistake: `high` (almost 
 python -m pytest
 ```
 
-## Desktop app (in progress)
+## Desktop app
 
-A small mascot that floats on top of everything; drop a video on it to check it (Step 3).
+A small mascot that floats on top of everything. Drop a video on it, and it checks the video in the
+background and opens the Word report when it's done.
 
 ```
 python -m src.app            # start it
-python -m src.app --demo     # also a tray submenu to preview the four mascot states
+python -m src.app --demo     # also a menu to preview the four mascot states
 ```
+
+**Using it**
+- **Drop a video** (mp4, mov, m4v, mkv, avi, mxf, webm) from Explorer or Finder onto the mascot; a blue
+  dashed outline shows it will be accepted. Or **click** the mascot to pick a file.
+- While it works, a blue ring around the face shows progress; hover for the stage and percentage.
+  You can keep working: the check runs in the background.
+- **When it's done** the face is happy with a red badge (the number of issues), a desktop notification
+  appears, and the report opens in Word. If the check fails, the face shows X eyes and a message explains
+  what went wrong, with a button to open the log file.
+- **Right-click** the mascot (or the tray / menu bar icon) for:
+  - *Check a video...* and *Cancel check*
+  - *Client*: the client the next video is checked for. With *Guess from the file name* on, a code in the
+    file name wins ("E8D_reel_03.mp4" is E8D); otherwise the client you picked last is used.
+  - *Checks*: switch each check on or off. *Punctuation (AI, costs money)* is off until you switch it on.
+  - *Open last report*, *Open reports folder*, *Settings...* (reports folder, open the report when done,
+    notifications, guess the client), *Quit*.
+- On start it checks that ffmpeg is installed and, if not, shows how to install it on your system.
+- **Log file:** Windows `%LOCALAPPDATA%\VideoQCBot\Logs\videoqcbot.log`, macOS `~/Library/Logs/VideoQCBot/videoqcbot.log`.
 
 - **The mascot** is a 120 px frameless, transparent window that stays on top of other windows, has
   no taskbar button (Windows) and no Dock icon (macOS). Drag it anywhere; it reopens where you left it.

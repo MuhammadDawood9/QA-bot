@@ -455,7 +455,7 @@ The report document, color checks, OCR, the ClickUp API and any UI are on hold u
 | Burned-in captions (Milestone 5) | OCR of the picture, per-client region, word-by-word grouping | **Done (2026-10-12)**, tested on synthetic videos and one real video |
 | Sync, uncaptioned speech, names vs graphics | New caption checks found on the first real video | **Done (2026-10-12)** |
 | Color grading (Milestone 7) | Per-shot measurements and flags from the 166 color notes | **Done (2026-10-12)**, thresholds not yet evaluated on real notes |
-| Desktop companion app | Steps 1-4 (see below) | **Steps 1-2 done (2026-10-12)**; Step 3 next |
+| Desktop companion app | Steps 1-4 (see below) | **Steps 1-3 done (2026-10-12)**; Step 4 on request |
 
 ### Machines
 - Develop on Windows (Lenovo ThinkPad), run on a MacBook (specs to come). All code is cross-platform: pathlib everywhere,
@@ -680,6 +680,26 @@ Windows 10/11 and macOS (Intel, also Apple Silicon); OS-specific code only in `s
   the window lands on a screen. `--demo` adds a tray submenu to preview the states until Step 3 drives them.
   A right-click "Quit" on the mascot covers systems without a tray. **Not testable here:** the macOS parts
   (Dock, Spaces, menu bar icon) run only on a Mac; they fail soft (warning, Qt defaults) if a native call fails.
+- **Step 3 (done):** drop videos on the mascot (it shows a dashed outline when the drag holds a video) or click it for a
+  file picker (remembers the folder). The check runs `run_qc` + `build_docx_report` on a QThread (`src/app/worker.py`);
+  progress arrives as a Qt signal (throttled to 0.5% steps) and draws a ring on the mascot; cancel sets the engine's
+  cancel event. One check at a time; a second drop is refused with a notification. Finished: done state with the
+  count, tray notification (Qt's `showMessage`), report opened with `QDesktopServices.openUrl`. Failed: error state,
+  notification, a dialog with the message and "Open log file". Unexpected exceptions are caught in the worker and
+  logged with their traceback, so the app stays up.
+- **Right-click and tray menus are the same menu**, rebuilt on every open: status line, check a video, cancel, client
+  (guess from file name + radio list of client files + default rules), check toggles, open last report, open reports
+  folder, settings dialog, quit.
+- **Client choice:** a client code in the file name wins when guessing is on; otherwise the client picked last in the
+  menu; otherwise default rules. A guessed client doesn't change the remembered one.
+- **The AI punctuation check is off by default in the app** (it costs money per video); a toggle switches it on.
+- **Settings** (`settings.json` in the OS config folder): position, last client, guess on/off, checks switched off,
+  reports folder, open report when done, notifications, last report, last folder. A value of the wrong type falls back
+  to its default. **Log file** in the OS log folder (rotating, 1 MB x 3), with the engine's warnings captured.
+- **Startup tool check: ffmpeg only**, with install steps per OS from the platform module. Tesseract isn't checked
+  because nothing uses it (RapidOCR does the OCR); waiting on a decision.
+- **Windows shortcuts** (made on request, before Step 4's packaging): Start Menu and Desktop "Video QC Bot" run
+  `.venv\Scripts\pythonw.exe -m src.app` from the project folder, with `assets/app/videoqcbot.ico`.
 - `guess_client(video, known)` finds a client code in a file name ("E8D_reel.mp4", "8d - reel.mov") for Step 3.
 
 ### Evaluation of the color checks (2026-10-12)

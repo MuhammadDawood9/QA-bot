@@ -11,6 +11,7 @@ never imports this package. Each OS module (windows.py, macos.py, other.py) prov
     prepare_floating_window(widget)        anything to do once the window exists
     after_app_created(app)                 e.g. keep the app out of the macOS Dock
     tray_icon(assets_dir) -> QIcon         the tray / menu bar icon
+    ffmpeg_install_help() -> str           how to install ffmpeg on this OS, for the startup check
 """
 
 from __future__ import annotations
