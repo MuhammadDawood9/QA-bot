@@ -455,7 +455,7 @@ The report document, color checks, OCR, the ClickUp API and any UI are on hold u
 | Burned-in captions (Milestone 5) | OCR of the picture, per-client region, word-by-word grouping | **Done (2026-10-12)**, tested on synthetic videos and one real video |
 | Sync, uncaptioned speech, names vs graphics | New caption checks found on the first real video | **Done (2026-10-12)** |
 | Color grading (Milestone 7) | Per-shot measurements and flags from the 166 color notes | **Done (2026-10-12)**, thresholds not yet evaluated on real notes |
-| Desktop companion app | Steps 1-4 (see below) | **Step 1 done (2026-10-12)**; Step 2 next |
+| Desktop companion app | Steps 1-4 (see below) | **Steps 1-2 done (2026-10-12)**; Step 3 next |
 
 ### Machines
 - Develop on Windows (Lenovo ThinkPad), run on a MacBook (specs to come). All code is cross-platform: pathlib everywhere,
@@ -668,6 +668,18 @@ Windows 10/11 and macOS (Intel, also Apple Silicon); OS-specific code only in `s
   table with a row per issue: time, screenshot, original text, what's wrong, suggested fix, confidence; appendix of all
   captions. Saved as `reports/<video>_<date-time>/<video>_QC_<date>.docx`; `build_docx_report(result)` returns the path.
   (The per-caption sections and links of the first Word version are gone; Markdown and CSV are unchanged.)
+- **Step 2 (done):** the floating mascot in PySide6. **PySide6-Essentials 6.11.2** (the core of PySide6; the newest
+  version with an Intel-Mac wheel, universal2, needs macOS 13+; macOS 11-12 would use 6.7.3) and **platformdirs 4.13.0**,
+  both named in the spec. `src/app/` holds the UI, `src/platform/{windows,macos,other}.py` everything OS-specific
+  (window flags, Dock hiding, tray icon), chosen once by `sys.platform`. Window: Tool + frameless + stays-on-top +
+  translucent, 120 logical px; macOS also gets WA_MacAlwaysShowToolWindow, "join all Spaces / full-screen auxiliary",
+  and the accessory activation policy (no Dock icon) through the Objective-C runtime via ctypes, so no pyobjc.
+  High-DPI: pass-through scaling and 1x/@2x images loaded together in a QIcon (checked at 150% and 300%).
+  Placeholder art from `scripts/make_mascot_placeholders.py`; monochrome template tray icon for the macOS menu bar,
+  color icon for Windows. Position saved in `settings.json` in the OS config folder; restored only if at least half
+  the window lands on a screen. `--demo` adds a tray submenu to preview the states until Step 3 drives them.
+  A right-click "Quit" on the mascot covers systems without a tray. **Not testable here:** the macOS parts
+  (Dock, Spaces, menu bar icon) run only on a Mac; they fail soft (warning, Qt defaults) if a native call fails.
 - `guess_client(video, known)` finds a client code in a file name ("E8D_reel.mp4", "8d - reel.mov") for Step 3.
 
 ### Evaluation of the color checks (2026-10-12)

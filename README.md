@@ -145,6 +145,33 @@ Severity tells you how sure the bot is that it's a real mistake: `high` (almost 
 python -m pytest
 ```
 
+## Desktop app (in progress)
+
+A small mascot that floats on top of everything; drop a video on it to check it (Step 3).
+
+```
+python -m src.app            # start it
+python -m src.app --demo     # also a tray submenu to preview the four mascot states
+```
+
+- **The mascot** is a 120 px frameless, transparent window that stays on top of other windows, has
+  no taskbar button (Windows) and no Dock icon (macOS). Drag it anywhere; it reopens where you left it.
+  If that spot is no longer on any screen (monitor unplugged), it comes back to the bottom-right corner.
+- **States:** idle, working, done (with a red badge showing the number of issues, "99+" over 99) and error.
+- **Tray / menu bar icon** with *Show mascot* and *Quit*. Right-clicking the mascot also offers *Quit*,
+  so the app can always be closed even where there is no tray.
+- **Your own mascot images:** replace the PNGs in `assets/mascot/` (`idle.png`, `working.png`, `done.png`,
+  `error.png`, each 120 x 120 with a transparent background) and add `@2x` versions at 240 x 240
+  (`idle@2x.png` ...) so they're sharp on Retina and high-DPI screens. To redraw the placeholders:
+  `python scripts/make_mascot_placeholders.py --force`.
+- **Settings** are saved in the OS config folder, not in the project:
+  Windows `%LOCALAPPDATA%\VideoQCBot\settings.json`, macOS `~/Library/Application Support/VideoQCBot/settings.json`.
+- **macOS and full-screen apps:** macOS puts each full-screen app in its own Space. The mascot is set to
+  show on every desktop and beside full-screen apps, but macOS doesn't guarantee that for every app: in some
+  full-screen apps it won't appear until you leave full screen. On ordinary desktops it is always there.
+- **macOS versions:** PySide6 6.11.2 needs macOS 13 or newer. On macOS 11-12 install 6.7.3 (see
+  `requirements.txt`).
+
 ## Configuration
 
 - **`config.yaml`** holds every threshold. The `machine:` block at the top holds the
