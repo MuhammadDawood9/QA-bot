@@ -158,7 +158,7 @@ python -m src.app --demo     # also a menu to preview the four mascot states
 **Using it**
 - **Drop a video** (mp4, mov, m4v, mkv, avi, mxf, webm) from Explorer or Finder onto the mascot; a blue
   dashed outline shows it will be accepted. Or **click** the mascot to pick a file.
-- While it works, a blue ring around the face shows progress; hover for the stage and percentage.
+- While it works, the face bobs gently and a blue ring shows progress; hover for the stage and percentage.
   You can keep working: the check runs in the background.
 - **When it's done** the face is happy with a red badge (the number of issues), a desktop notification
   appears, and the report opens in Word. If the check fails, the face shows X eyes and a message explains
@@ -169,8 +169,13 @@ python -m src.app --demo     # also a menu to preview the four mascot states
     file name wins ("E8D_reel_03.mp4" is E8D); otherwise the client you picked last is used.
   - *Checks*: switch each check on or off. *Punctuation (AI, costs money)* is off until you switch it on.
   - *Open last report*, *Open reports folder*, *Settings...* (reports folder, open the report when done,
-    notifications, guess the client), *Quit*.
+    notifications, guess the client), *Start at login*, *Quit*.
 - On start it checks that ffmpeg is installed and, if not, shows how to install it on your system.
+- **Start at login** (right-click menu): Windows adds a startup entry for your user (registry `Run` key, no admin
+  rights); macOS adds a LaunchAgent in `~/Library/LaunchAgents`. Untick it to remove them.
+- **A real app without Python:** build it with PyInstaller, separately on Windows and on macOS. See
+  [`packaging/README.md`](packaging/README.md) for the steps and the first-run security warnings.
+- `run_app.pyw` in the project folder starts the app from source by double-clicking (no terminal on Windows).
 - **Log file:** Windows `%LOCALAPPDATA%\VideoQCBot\Logs\videoqcbot.log`, macOS `~/Library/Logs/VideoQCBot/videoqcbot.log`.
 
 - **The mascot** is a 120 px frameless, transparent window that stays on top of other windows, has

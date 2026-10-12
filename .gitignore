@@ -31,3 +31,7 @@ Thumbs.db
 
 # Secrets
 .env
+
+# PyInstaller output
+build/
+dist/

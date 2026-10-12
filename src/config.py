@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import re
+import sys
 import warnings
 from pathlib import Path
 
@@ -11,6 +12,51 @@ import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG = PROJECT_ROOT / "config.yaml"
+
+# Files the user may edit. A packaged app (PyInstaller) can't write inside itself, so on its first
+# run they're copied from the bundle into the OS data folder and read from there; the cache,
+# models and reports paths in config.yaml then also land in that folder.
+EDITABLE_FILES = ("config.yaml", "rules.yaml", "glossary.txt", "extra_words.txt", "clients", "data/examples.csv")
+
+
+def is_frozen() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
+def user_data_root() -> Path:
+    """Where a packaged app keeps its config, cache and models:
+    Windows %LOCALAPPDATA%\\VideoQCBot\\data, macOS ~/Library/Application Support/VideoQCBot/data."""
+    import platformdirs
+
+    return platformdirs.user_data_path("VideoQCBot", appauthor=False) / "data"
+
+
+def install_user_files(bundle: Path, target: Path) -> list[str]:
+    """Copy each editable file or folder from the bundle that isn't in `target` yet. Never
+    overwrites, so your edits survive updates. Returns what was copied."""
+    import shutil
+
+    copied = []
+    for name in EDITABLE_FILES:
+        src, dst = bundle / name, target / name
+        if dst.exists() or not src.exists():
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if src.is_dir():
+            shutil.copytree(src, dst)
+        else:
+            shutil.copy2(src, dst)
+        copied.append(name)
+    return copied
+
+
+def default_config_path() -> Path:
+    """config.yaml next to src/ when run from source; in the OS data folder in a packaged app."""
+    if not is_frozen():
+        return DEFAULT_CONFIG
+    target = user_data_root()
+    install_user_files(Path(getattr(sys, "_MEIPASS", PROJECT_ROOT)), target)
+    return target / "config.yaml"
 
 _BARE_CLIENT_CODE = re.compile(r"\d+[A-Z]+")
 
@@ -39,7 +85,7 @@ def load_yaml(path: Path) -> dict:
 
 def load_config(path: Path | None = None) -> dict:
     """Load config.yaml. Relative paths inside it are resolved against the file's folder."""
-    path = Path(path) if path else DEFAULT_CONFIG
+    path = Path(path) if path else default_config_path()
     config = load_yaml(path)
     config["_root"] = path.resolve().parent
     return config

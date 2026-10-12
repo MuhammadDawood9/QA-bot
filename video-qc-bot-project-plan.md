@@ -455,7 +455,7 @@ The report document, color checks, OCR, the ClickUp API and any UI are on hold u
 | Burned-in captions (Milestone 5) | OCR of the picture, per-client region, word-by-word grouping | **Done (2026-10-12)**, tested on synthetic videos and one real video |
 | Sync, uncaptioned speech, names vs graphics | New caption checks found on the first real video | **Done (2026-10-12)** |
 | Color grading (Milestone 7) | Per-shot measurements and flags from the 166 color notes | **Done (2026-10-12)**, thresholds not yet evaluated on real notes |
-| Desktop companion app | Steps 1-4 (see below) | **Steps 1-3 done (2026-10-12)**; Step 4 on request |
+| Desktop companion app | Steps 1-4 (see below) | **Steps 1-4 done (2026-10-12)**; Windows build tested, macOS build untested |
 
 ### Machines
 - Develop on Windows (Lenovo ThinkPad), run on a MacBook (specs to come). All code is cross-platform: pathlib everywhere,
@@ -700,6 +700,26 @@ Windows 10/11 and macOS (Intel, also Apple Silicon); OS-specific code only in `s
   because nothing uses it (RapidOCR does the OCR); waiting on a decision.
 - **Windows shortcuts** (made on request, before Step 4's packaging): Start Menu and Desktop "Video QC Bot" run
   `.venv\Scripts\pythonw.exe -m src.app` from the project folder, with `assets/app/videoqcbot.ico`.
+- **Step 4 (done):** working animation (the face bobs 3 px over 1.2 s, ~30 fps timer that runs only while working).
+  Start at login in the platform modules: Windows `HKCU\...\CurrentVersion\Run` value via `winreg` (per user, no admin;
+  the Startup-folder shortcut would need COM or a shell command), macOS a LaunchAgent plist via `plistlib`
+  (`RunAtLoad`, Aqua sessions only); the entry is refreshed at each start so a moved app still launches.
+  From source the entry runs `pythonw.exe run_app.pyw`; packaged, the program itself.
+- **Packaging: PyInstaller 6.22.3** (named in the spec), one spec for both OSes (`packaging/videoqcbot.spec`), one-folder
+  builds (faster start than one-file for ~490 MB). The Mac `.app` has `LSUIElement` (no Dock icon) and
+  `LSMinimumSystemVersion` 13.0. Data files: config, rules, clients, glossary, extra words, assets, plus the OCR
+  models, Whisper's VAD model, the spell checker's word lists and python-docx's template from their packages. Not
+  bundled: ffmpeg (licensing and size; the startup check explains how to install it) and the Whisper/face models
+  (downloaded on first use). **Built and tested on Windows:** `--selftest` passes and `--check` ran a full check of
+  `del.mp4` from the `.exe`. **The macOS build is untested** (no Mac here).
+- **A packaged app writes nothing inside itself:** on first run the editable files are copied into the OS data folder
+  (`platformdirs.user_data_path`) and never overwritten; config, cache and models are read from there, and reports
+  default to `Documents/Video QC Bot reports`. Running from source is unchanged.
+- **macOS PATH:** apps started from Finder or at login don't see Homebrew's folders, so the macOS platform module adds
+  `/opt/homebrew/bin` and `/usr/local/bin` to the app's PATH (otherwise a Homebrew ffmpeg isn't found).
+- `--selftest` and `--check VIDEO` let a build be verified without clicking through it.
+- **Not done:** code signing (Windows certificate, Apple Developer ID and notarization), so first runs show SmartScreen
+  and Gatekeeper warnings (steps in `packaging/README.md`); an installer program; a native Apple Silicon build.
 - `guess_client(video, known)` finds a client code in a file name ("E8D_reel.mp4", "8d - reel.mov") for Step 3.
 
 ### Evaluation of the color checks (2026-10-12)

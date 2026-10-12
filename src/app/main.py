@@ -27,7 +27,7 @@ from src.app.dialogs import SettingsDialog, open_path, show_error
 from src.app.mascot import MascotWindow
 from src.app.settings import APP_NAME, Settings, log_dir
 from src.app.worker import CheckRunner
-from src.config import load_config
+from src.config import PROJECT_ROOT, is_frozen, load_config
 from src.engine import known_clients
 from src.platform import current as platform
 from src.utils.system import MissingToolError, find_ffmpeg
@@ -65,6 +65,11 @@ class CompanionApp:
 
     @property
     def default_reports_dir(self) -> Path:
+        """The project's reports/ folder when run from source; Documents/Video QC Bot reports when packaged."""
+        if is_frozen():
+            import platformdirs
+
+            return platformdirs.user_documents_path() / "Video QC Bot reports"
         return Path(self.config["_root"]) / self.config.get("report", {}).get("output_dir", "reports")
 
     @property
@@ -120,6 +125,10 @@ class CompanionApp:
         menu.addAction("Open last report", self.open_last_report).setEnabled(bool(last) and Path(last).is_file())
         menu.addAction("Open reports folder", self.open_reports_folder)
         menu.addAction("Settings...", self.open_settings)
+        login = menu.addAction("Start at login")
+        login.setCheckable(True)
+        login.setChecked(platform.launch_at_login_enabled())
+        login.toggled.connect(self.set_start_at_login)
         if self.demo:
             preview = menu.addMenu("Preview state")
             for label, state, count in (("Idle", "idle", None), ("Working", "working", None),
@@ -241,6 +250,22 @@ class CompanionApp:
     def open_settings(self) -> None:
         SettingsDialog(self.settings, self.default_reports_dir).exec()
 
+    def set_start_at_login(self, enabled: bool) -> None:
+        try:
+            platform.set_launch_at_login(enabled, launch_command())
+            log.info("start at login %s: %s", "on" if enabled else "off", launch_command())
+        except OSError as exc:
+            log.error("couldn't change start at login: %s", exc)
+            QMessageBox.warning(None, "Video QC Bot", f"Couldn't change \"Start at login\":\n{exc}")
+
+    def refresh_start_at_login(self) -> None:
+        """If start at login is on, point it at this copy of the app (it may have been moved or updated)."""
+        try:
+            if platform.launch_at_login_enabled():
+                platform.set_launch_at_login(True, launch_command())
+        except OSError as exc:
+            log.warning("couldn't refresh the start-at-login entry: %s", exc)
+
     def check_tools(self) -> bool:
         """ffmpeg is needed for audio and screenshots: say how to install it if it's missing."""
         try:
@@ -263,6 +288,81 @@ class CompanionApp:
         if self.tray is not None:
             self.tray.hide()
         self.app.quit()
+
+
+def launch_command() -> list[str]:
+    """How to start this app: the packaged program itself, or Python running run_app.pyw (no
+    console window on Windows: pythonw.exe)."""
+    if is_frozen():
+        return [sys.executable]
+    python = Path(sys.executable)
+    windowless = python.with_name("pythonw.exe")
+    return [str(windowless if windowless.is_file() else python), str(PROJECT_ROOT / "run_app.pyw")]
+
+
+def selftest() -> int:
+    """Load every heavy library and data file the engine needs, then exit: checks a packaged build
+    without clicking through it. Prints one line per item and returns 0 when all are there."""
+    import importlib
+
+    from src.app.assets import STATES, assets_dir
+    from src.config import resolve_path
+
+    def report(line: str) -> None:
+        print(line)                 # nothing shows in a windowed build, so it also goes to the log
+        log.info("selftest: %s", line)
+
+    problems = 0
+    for module in ("faster_whisper", "ctranslate2", "onnxruntime", "rapidocr_onnxruntime", "cv2", "av", "docx",
+                   "spellchecker", "rapidfuzz", "openpyxl", "anthropic", "src.engine"):
+        try:
+            importlib.import_module(module)
+            report(f"ok      import {module}")
+        except Exception as exc:                          # report every failure, not just the first
+            problems += 1
+            report(f"FAILED  import {module}: {type(exc).__name__}: {exc}")
+    config = load_config()
+    checks = [("config", Path(config["_root"]) / "config.yaml"), ("rules", resolve_path(config, "rules_file")),
+              ("clients", resolve_path(config, "clients_dir")), ("glossary", resolve_path(config, "glossary_file"))]
+    checks += [(f"mascot {s}", assets_dir() / "mascot" / f"{s}.png") for s in STATES]
+    for name, path in checks:
+        found = path.exists()
+        problems += not found
+        report(f"{'ok' if found else 'MISSING':<7} {name}: {path}")
+    from spellchecker import SpellChecker
+    known = "hello" in SpellChecker()
+    problems += not known
+    report(f"{'ok' if known else 'FAILED':<7} spell checker word list")
+    from rapidocr_onnxruntime import RapidOCR
+    RapidOCR()
+    report("ok      OCR models load")
+    report("all good" if problems == 0 else f"{problems} problem(s)")
+    return 0 if problems == 0 else 1
+
+
+def check_without_window(video: Path, client: str | None) -> int:
+    """The whole pipeline from the packaged app, no window: proves a build can really check videos.
+    Progress and the result go to the log (and the console, when there is one)."""
+    from src.app.choices import qc_options
+    from src.engine import QCError, build_docx_report, run_qc
+
+    last = {"stage": None}
+
+    def progress(stage: str, fraction: float) -> None:
+        if stage != last["stage"]:
+            last["stage"] = stage
+            log.info("check: %s", stage)
+
+    try:
+        result = run_qc(video, client, progress, options=qc_options(["punctuation"]))
+        report = build_docx_report(result)
+    except QCError as exc:
+        log.error("check failed: %s", exc)
+        return 2
+    log.info("check: %d issues, report %s", len(result), report)
+    for issue in result:
+        log.info("check: %s %s %s", round(issue.timestamp, 2), issue.type, issue.message[:90])
+    return 0
 
 
 def setup_logging() -> Path:
@@ -299,13 +399,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     argv = list(sys.argv if argv is None else argv)
     parser = argparse.ArgumentParser(prog="python -m src.app", description="Video QC Bot desktop companion.")
     parser.add_argument("--demo", action="store_true", help="add a menu to preview the mascot states")
+    parser.add_argument("--selftest", action="store_true", help="check that every library and data file loads, then exit")
+    parser.add_argument("--check", type=Path, metavar="VIDEO",
+                        help="check one video without the window, write the Word report, then exit")
+    parser.add_argument("--client", help="client code for --check")
     args = parser.parse_args(argv[1:])
     log_file = setup_logging()
+    added = platform.extend_path()
+    if added:
+        log.info("added to PATH for finding ffmpeg: %s", ", ".join(added))
+    if args.selftest:
+        return selftest()
+    if args.check:
+        return check_without_window(args.check, args.client)
     log.info("starting; log file %s", log_file)
 
     app = make_application(argv)
     companion = CompanionApp(app, Settings(), demo=args.demo)
     companion.show_mascot()
+    companion.refresh_start_at_login()
     QTimer.singleShot(500, companion.check_tools)
     return app.exec()
 

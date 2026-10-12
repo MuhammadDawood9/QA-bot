@@ -113,3 +113,52 @@ def ffmpeg_install_help() -> str:
             "4. Quit and restart Video QC Bot.\n\n"
             "If it's installed somewhere unusual, put the full path to ffmpeg in "
             "machine.ffmpeg_path in config.yaml.")
+
+
+# --- start at login: a LaunchAgent in ~/Library/LaunchAgents (this user only) ---
+
+AGENT_LABEL = "com.videoqcbot.companion"
+
+
+def _agent_path(agents_dir: Path | None = None) -> Path:
+    return (agents_dir or Path.home() / "Library" / "LaunchAgents") / f"{AGENT_LABEL}.plist"
+
+
+def launch_at_login_enabled(agents_dir: Path | None = None) -> bool:
+    return _agent_path(agents_dir).is_file()
+
+
+def set_launch_at_login(enabled: bool, command: list[str], agents_dir: Path | None = None) -> None:
+    """Write or remove the LaunchAgent; macOS runs it at the next login. Raises OSError."""
+    import plistlib
+
+    path = _agent_path(agents_dir)
+    if not enabled:
+        path.unlink(missing_ok=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    agent = {
+        "Label": AGENT_LABEL,
+        "ProgramArguments": [str(part) for part in command],
+        "RunAtLoad": True,
+        "ProcessType": "Interactive",
+        "LimitLoadToSessionType": "Aqua",              # only in a graphical login, not over ssh
+    }
+    with path.open("wb") as f:
+        plistlib.dump(agent, f)
+
+
+# Apps started from Finder or at login get a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin), so
+# tools installed with Homebrew aren't found unless their folders are added.
+TOOL_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")      # Homebrew on Apple Silicon, on Intel
+
+
+def extend_path() -> list[str]:
+    """Add Homebrew's folders to this process's PATH (for ffmpeg). Returns the folders added."""
+    import os
+
+    current = os.environ.get("PATH", "").split(os.pathsep)
+    added = [d for d in TOOL_DIRS if d not in current and Path(d).is_dir()]
+    if added:
+        os.environ["PATH"] = os.pathsep.join(current + added)
+    return added

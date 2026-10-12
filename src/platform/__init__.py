@@ -12,6 +12,9 @@ never imports this package. Each OS module (windows.py, macos.py, other.py) prov
     after_app_created(app)                 e.g. keep the app out of the macOS Dock
     tray_icon(assets_dir) -> QIcon         the tray / menu bar icon
     ffmpeg_install_help() -> str           how to install ffmpeg on this OS, for the startup check
+    launch_at_login_enabled() -> bool      whether the app starts when you log in
+    set_launch_at_login(enabled, command)  turn that on (with the command to run) or off
+    extend_path() -> list[str]             add the folders this OS installs tools in (ffmpeg) to PATH
 """
 
 from __future__ import annotations

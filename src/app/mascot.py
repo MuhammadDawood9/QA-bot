@@ -13,7 +13,10 @@ import logging
 
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, Signal
+import math
+import time
+
+from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
@@ -25,6 +28,9 @@ from src.platform import current as platform
 log = logging.getLogger("qcbot.app")
 
 SIZE = 120                    # logical pixels; Qt scales for high-DPI screens
+BOB_PIXELS = 3                # how far the face bobs up and down while working
+BOB_SECONDS = 1.2             # one bob, down and back up
+FRAME_MS = 33                 # animation frame interval (~30 fps), only while working
 EDGE_MARGIN = 24              # gap from the screen edge for the default position
 DRAG_THRESHOLD = 4            # pixels the mouse must move before a press counts as a drag
 
@@ -50,6 +56,11 @@ class MascotWindow(QWidget):
         self._dragging = False
         self.progress: float | None = None            # 0..1 while working
         self._drop_hover = False
+        self.bob = 0.0                                 # current vertical offset of the face, pixels
+        self._animation = QTimer(self)
+        self._animation.setInterval(FRAME_MS)
+        self._animation.timeout.connect(self._animate)
+        self._animation_start = 0.0
 
         self.setAcceptDrops(True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -69,6 +80,11 @@ class MascotWindow(QWidget):
         self.state, self.count = state, (count if state == "done" else None)
         if state != "working":
             self.progress = None
+            self._animation.stop()
+            self.bob = 0.0
+        elif not self._animation.isActive():
+            self._animation_start = time.monotonic()
+            self._animation.start()
         self.setToolTip({"idle": "Video QC Bot", "working": "Checking...",
                          "done": f"Done: {count} issue{'s' if count != 1 else ''}" if count is not None else "Done",
                          "error": "Something went wrong"}[state])
@@ -116,7 +132,7 @@ class MascotWindow(QWidget):
         if icon is not None and not icon.isNull():
             # The 2x image is used on high-DPI screens: ask for the window's device pixel ratio.
             pixmap = icon.pixmap(QSize(SIZE, SIZE), self.devicePixelRatioF())
-            painter.drawPixmap(QRect(0, 0, SIZE, SIZE), pixmap)
+            painter.drawPixmap(QRectF(0, self.bob, SIZE, SIZE), pixmap, QRectF(pixmap.rect()))
         else:
             self._paint_fallback(painter)
         if self.state == "working" and self.progress is not None:
@@ -137,6 +153,17 @@ class MascotWindow(QWidget):
         painter.drawEllipse(QRect(8, 8, SIZE - 16, SIZE - 16))
         painter.setPen(QColor("white"))
         painter.drawText(QRect(0, 0, SIZE, SIZE), Qt.AlignmentFlag.AlignCenter, self.state)
+
+    @property
+    def animating(self) -> bool:
+        return self._animation.isActive()
+
+    def _animate(self) -> None:
+        """Working: the face bobs gently. The timer only runs in the working state, so an idle
+        mascot uses no CPU."""
+        phase = (time.monotonic() - self._animation_start) / BOB_SECONDS * 2 * math.pi
+        self.bob = BOB_PIXELS * (1 - math.cos(phase)) / 2          # 0 -> BOB_PIXELS -> 0, smoothly
+        self.update()
 
     def set_progress(self, stage: str, fraction: float) -> None:
         """While working: a ring around the face and the stage in the tooltip."""
