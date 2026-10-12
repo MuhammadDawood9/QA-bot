@@ -37,7 +37,7 @@ pip install pyinstaller==6.22.3
 pyinstaller packaging\videoqcbot.spec --noconfirm --distpath dist --workpath build
 ```
 
-This takes a few minutes and makes `dist\VideoQCBot\` (about 490 MB). **Keep the folder whole:**
+This takes a few minutes and makes `dist\VideoQCBot\` (about 440 MB). **Keep the folder whole:**
 `VideoQCBot.exe` needs the `_internal` folder next to it.
 
 **Check the build** before using it. Each command waits for the app and returns its exit code; 0 is good:

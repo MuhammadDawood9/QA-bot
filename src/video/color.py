@@ -191,42 +191,58 @@ def analysis_mask(height: int, width: int, caption_region: dict | None):
     return mask
 
 
-def analyze(frames: Iterator[tuple[float, float, object]], settings: dict, caption_region: dict | None = None,
-            face_detector=None, progress: Stage | None = None) -> list[Shot]:
-    """(time, duration, RGB frame) in order -> shots with per-frame measurements."""
-    import cv2
+class ColorAnalyzer:
+    """The color pass one frame at a time: feed() each sampled (time, RGB frame) in order, then
+    shots(). Lets one decode of the video feed the color and the OCR passes together."""
 
-    progress = progress or silent()
-    cut_threshold = float(settings.get("cut_threshold", 0.35))
-    min_shot = float(settings.get("min_shot_sec", 0.5))
-    # Cuts are looked for on every sampled frame (cheap); the measurements, and faces even more so,
-    # on every n-th frame of each shot, counted from the shot's first frame so every shot is
-    # measured and has its faces looked for at least once.
-    measure_every = max(1, int(settings.get("measure_every_n_frames", 1)))
-    face_every = max(1, int(settings.get("face_every_n_frames", 2)))
-    shots: list[Shot] = []
-    prev_hist, mask, in_shot, last_t = None, None, 0, 0.0
-    for t, duration, image in frames:
-        progress(t / duration if duration else 0.0)
+    def __init__(self, settings: dict, caption_region: dict | None = None, face_detector=None):
+        self.settings, self.caption_region, self.face_detector = settings, caption_region, face_detector
+        self.cut_threshold = float(settings.get("cut_threshold", 0.35))
+        self.min_shot = float(settings.get("min_shot_sec", 0.5))
+        # Cuts are looked for on every sampled frame (cheap); the measurements, and faces even more
+        # so, on every n-th frame of each shot, counted from the shot's first frame so every shot
+        # is measured and has its faces looked for at least once.
+        self.measure_every = max(1, int(settings.get("measure_every_n_frames", 1)))
+        self.face_every = max(1, int(settings.get("face_every_n_frames", 2)))
+        self._shots: list[Shot] = []
+        self._prev_hist, self._mask, self._in_shot, self._last_t = None, None, 0, 0.0
+
+    def feed(self, t: float, image) -> None:
+        import cv2
+
+        shots = self._shots
         h, w = image.shape[:2]
         if w > ANALYSIS_WIDTH:
             image = cv2.resize(image, (ANALYSIS_WIDTH, round(h * ANALYSIS_WIDTH / w)), interpolation=cv2.INTER_AREA)
-        if mask is None or mask.shape != image.shape[:2]:
-            mask = analysis_mask(image.shape[0], image.shape[1], caption_region)
+        if self._mask is None or self._mask.shape != image.shape[:2]:
+            self._mask = analysis_mask(image.shape[0], image.shape[1], self.caption_region)
         hist = histogram(image)
-        if not shots or (is_cut(prev_hist, hist, cut_threshold) and t - shots[-1].start >= min_shot):
+        if not shots or (is_cut(self._prev_hist, hist, self.cut_threshold) and t - shots[-1].start >= self.min_shot):
             if shots:
                 shots[-1].end = round(t, 3)
             shots.append(Shot(number=len(shots) + 1, start=round(t, 3), end=round(t, 3)))
-            in_shot = 0
-        if in_shot % measure_every == 0:
-            skin = skin_of_faces(image, face_detector) if in_shot % face_every == 0 else None
-            shots[-1].frames.append(frame_stats(t, image, mask, skin))
-        prev_hist, in_shot, last_t = hist, in_shot + 1, t
-    if shots:
-        step = 1.0 / float(settings.get("sample_fps", 4))
-        shots[-1].end = round(last_t + step, 3)
-    return shots
+            self._in_shot = 0
+        if self._in_shot % self.measure_every == 0:
+            skin = skin_of_faces(image, self.face_detector) if self._in_shot % self.face_every == 0 else None
+            shots[-1].frames.append(frame_stats(t, image, self._mask, skin))
+        self._prev_hist, self._in_shot, self._last_t = hist, self._in_shot + 1, t
+
+    def shots(self) -> list[Shot]:
+        if self._shots:
+            step = 1.0 / float(self.settings.get("sample_fps", 4))
+            self._shots[-1].end = round(self._last_t + step, 3)
+        return self._shots
+
+
+def analyze(frames: Iterator[tuple[float, float, object]], settings: dict, caption_region: dict | None = None,
+            face_detector=None, progress: Stage | None = None) -> list[Shot]:
+    """(time, duration, RGB frame) in order -> shots with per-frame measurements."""
+    progress = progress or silent()
+    analyzer = ColorAnalyzer(settings, caption_region, face_detector)
+    for t, duration, image in frames:
+        progress(t / duration if duration else 0.0)
+        analyzer.feed(t, image)
+    return analyzer.shots()
 
 
 # --- judging shots -------------------------------------------------------------------------
@@ -418,6 +434,32 @@ def hdr_transfer(video: Path) -> str | None:
         return None
 
 
+def color_cache_file(video: Path, settings: dict, caption_region: dict | None, cache_dir: Path) -> Path:
+    key_settings = {k: settings.get(k) for k in ("sample_fps", "cut_threshold", "min_shot_sec", "face_every_n_frames",
+                                                  "measure_every_n_frames")}
+    key = text_hash(COLOR_VERSION, json.dumps(key_settings, sort_keys=True), json.dumps(caption_region, sort_keys=True))[:10]
+    return Path(cache_dir) / f"{file_sha256(video)[:16]}-{key}.json"
+
+
+def load_shots(cache_file: Path) -> list[Shot] | None:
+    """The shots in a color cache file; None if it's missing or unreadable."""
+    if not cache_file.is_file():
+        return None
+    try:
+        data = json.loads(cache_file.read_text(encoding="utf-8"))
+        return [Shot(s["number"], s["start"], s["end"], [FrameStats(**f) for f in s["frames"]]) for s in data["shots"]]
+    except (OSError, ValueError, KeyError, TypeError):
+        log.warning("cached color analysis %s is unreadable; analysing again", cache_file.name)
+        return None
+
+
+def save_shots(cache_file: Path, video: Path, shots: Sequence[Shot]) -> None:
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    cache_file.write_text(json.dumps({"video": video.name, "shots": [
+        {"number": s.number, "start": s.start, "end": s.end, "frames": [asdict(f) for f in s.frames]}
+        for s in shots]}), encoding="utf-8")
+
+
 def read_color(video: Path, settings: dict, caption_region: dict | None = None, cache_dir: Path | None = None,
                models_dir: Path | None = None, progress: Stage | None = None) -> list[Shot]:
     from src.inputs.video_ocr import sample_frames
@@ -425,18 +467,12 @@ def read_color(video: Path, settings: dict, caption_region: dict | None = None, 
     video = Path(video)
     if not video.is_file():
         raise FileNotFoundError(f"video not found: {video}")
-    key_settings = {k: settings.get(k) for k in ("sample_fps", "cut_threshold", "min_shot_sec", "face_every_n_frames",
-                                                  "measure_every_n_frames")}
-    key = text_hash(COLOR_VERSION, json.dumps(key_settings, sort_keys=True), json.dumps(caption_region, sort_keys=True))[:10]
-    cache_file = Path(cache_dir) / f"{file_sha256(video)[:16]}-{key}.json" if cache_dir is not None else None
-    if cache_file is not None and cache_file.is_file():
-        try:
-            data = json.loads(cache_file.read_text(encoding="utf-8"))
+    cache_file = color_cache_file(video, settings, caption_region, cache_dir) if cache_dir is not None else None
+    if cache_file is not None:
+        shots = load_shots(cache_file)
+        if shots is not None:
             log.info("color: from cache (%s)", cache_file.name)
-            return [Shot(s["number"], s["start"], s["end"], [FrameStats(**f) for f in s["frames"]])
-                    for s in data["shots"]]
-        except (OSError, ValueError, KeyError, TypeError):
-            log.warning("cached color analysis %s is unreadable; analysing again", cache_file.name)
+            return shots
 
     log.info("measuring the color of %s...", video.name)
     started = time.monotonic()
@@ -444,8 +480,5 @@ def read_color(video: Path, settings: dict, caption_region: dict | None = None, 
                     face_detector(models_dir) if settings.get("skin_tones", True) else None, progress)
     log.info("color: %d shots measured in %.0f s", len(shots), time.monotonic() - started)
     if cache_file is not None:
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(json.dumps({"video": video.name, "shots": [
-            {"number": s.number, "start": s.start, "end": s.end, "frames": [asdict(f) for f in s.frames]}
-            for s in shots]}), encoding="utf-8")
+        save_shots(cache_file, video, shots)
     return shots

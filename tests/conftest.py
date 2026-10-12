@@ -28,3 +28,4 @@ def no_slow_video_passes(monkeypatch):
     and color measurement) are stubbed out. Their own tests call them directly."""
     monkeypatch.setattr("src.engine.read_screen_text", lambda *a, **kw: [])
     monkeypatch.setattr("src.engine.read_color", lambda *a, **kw: [])
+    monkeypatch.setattr("src.engine.read_video_once", lambda *a, **kw: [])

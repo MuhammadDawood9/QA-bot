@@ -30,6 +30,7 @@ from src.config import (check_settings, color_settings, load_client, load_config
                         ocr_settings, resolve_path)
 from src.inputs.srt_loader import SrtError, load_srt
 from src.inputs.video_ocr import FULL_FRAME, OcrError, parse_region, read_burned_in_captions, read_screen_text
+from src.inputs.video_pass import read_video_once
 from src.models import (CAPITALIZATION, EXTRA_WORD, MISSING_WORD, PUNCTUATION, REPEATED_WORD, SCREEN_TEXT_MISMATCH,
                         SPACING, SPELLING, WRONG_WORD, Caption, Issue)
 from src.report.builder import ReportInfo, build_report
@@ -52,12 +53,15 @@ OCR_WEAK_SPOT_NOTE = " (Read by OCR, which can miss spaces and mix up commas and
 
 # The stages of a run, in order, with roughly how much of a typical run's time each takes.
 # progress_cb gets these names; a stage that doesn't apply (OCR when an SRT is given) is skipped over.
+# "Reading the video" is one decode for the captions, the on-screen text and the color together
+# (src/inputs/video_pass.py); the stages after it then mostly load what it stored.
 STAGES = [
-    ("Reading captions", 0.40),
-    ("Reading on-screen text", 0.08),
+    ("Reading the video", 0.62),
+    ("Reading captions", 0.02),
+    ("Reading on-screen text", 0.02),
     ("Transcribing audio", 0.17),
     ("Checking captions", 0.15),
-    ("Checking color", 0.20),
+    ("Checking color", 0.02),
 ]
 
 
@@ -117,6 +121,12 @@ def run_qc(video_path: str | Path | None, client: str | None = None,
         client_data = load_client(config, client)
         context = build_context(config, client_data)
         _apply_options(context, options)
+
+        stage = stages["Reading the video"]
+        stage(0.0)
+        if video is not None:
+            _read_video_once(video, srt, config, client_data, context, options, stage)
+        stage(1.0)
 
         stage = stages["Reading captions"]
         stage(0.0)
@@ -198,13 +208,41 @@ def _apply_options(context: CheckContext, options: QCOptions) -> None:
         context.settings[name] = {**context.settings_for(name), "enabled": False}
 
 
+def _color_checked(video: Path | None, config: dict, client: dict, options: QCOptions) -> dict | None:
+    """The color settings when color is checked on this run, else None."""
+    settings = color_settings(config, client)
+    if (video is None or not options.check_color or "color" in options.disabled_checks
+            or not settings.get("enabled", False)):
+        return None
+    return settings
+
+
+def _read_video_once(video: Path, srt: Path | None, config: dict, client: dict, context: CheckContext,
+                     options: QCOptions, stage: Stage) -> None:
+    """Decode the video once for every pass over the picture that isn't cached yet. If that fails,
+    the passes read the video one by one afterwards, as before, and report their own errors."""
+    ocr = ocr_settings(config, client)
+    color = _color_checked(video, config, client, options)
+    try:
+        if color is not None and hdr_transfer(video):
+            color = None                                   # not measured; _color says why
+        region = parse_region(ocr.get("region", "full"))
+        read_video_once(video, ocr=ocr, ocr_cache=resolve_path(config, "ocr_cache_dir"), read_captions=srt is None,
+                        read_screen=bool(context.settings_for("screen_text").get("enabled", False)),
+                        known_captions=load_srt(srt) if srt is not None else None, color=color,
+                        caption_region=None if region == FULL_FRAME else region,
+                        color_cache=resolve_path(config, "color_cache_dir"),
+                        models_dir=resolve_path(config, "models_dir"), progress=stage)
+    except (OSError, OcrError, SrtError, ValueError) as exc:
+        log.warning("couldn't read %s in one pass (%s); reading it pass by pass", video.name, exc)
+
+
 def _color(video: Path | None, config: dict, client: dict, context: CheckContext, options: QCOptions,
            stage: Stage) -> list[Issue]:
     """Color grading issues, shot by shot. Burned-in captions are left out of the measurements
     when the client has a caption region."""
-    settings = color_settings(config, client)
-    if (video is None or not options.check_color or "color" in options.disabled_checks
-            or not settings.get("enabled", False)):
+    settings = _color_checked(video, config, client, options)
+    if settings is None:
         return []
     hdr = hdr_transfer(video)
     if hdr:

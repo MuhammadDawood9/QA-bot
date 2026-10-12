@@ -795,7 +795,28 @@ Windows 10/11 and macOS (Intel, also Apple Silicon); OS-specific code only in `s
   bot's Mac is Intel) for main and manual runs only (macOS minutes cost 10x on a private repo). A clean copy of
   the tracked files passes locally: 472 passed, 10 skipped (client data, Whisper, slow tests).
 
+### One decode per video (2026-10-13)
+- `src/inputs/video_pass.py` `read_video_once`: the caption OCR, the on-screen text OCR and the color pass used to
+  decode the whole video each. Their loops are now feed-one-frame objects (`CaptionReader`, `ScreenTextReader`,
+  `ColorAnalyzer`; the old functions wrap them), and `shared_frames` decodes once, handing each pass exactly the
+  frames `sample_frames` would at its rate. Only passes missing from their caches run; results go into those
+  caches, so the engine's usual calls load them (new first stage "Reading the video", 62% of the bar). The on-screen
+  text pass keeps every distinct reading and filters out the captions at the end, which gives the same list. If the
+  single pass fails, the engine logs it and the passes read the video one by one as before.
+- **Measured (empty caches): identical captions, on-screen text and color measurements; only 4-9% faster**
+  (del.mp4, 30 s: 356 s -> 326 s; the two samples 125 -> 120 s and 170 -> 157 s). The estimate of a third was
+  wrong: decoding was the biggest cost of the color pass alone, not of a whole check.
+- **Where the time really goes: the caption OCR.** With region `full` (the default, as for del.mp4) the picture
+  changes in almost every sampled frame, so the OCR reads the whole 1080x1920 frame 5 times a second (~2 s each).
+  A caption region per client (the OCR then reads only that strip, and only when it changes) is the big lever.
+
+- **Rebuilt app (2026-10-13):** 484 -> 437 MB by leaving out OpenCV's ffmpeg video reader (29 MB; PyAV decodes)
+  and Qt's software OpenGL (20 MB). The encoders in av.libs stay: libavcodec loads them at start. Packaged
+  --selftest all good; packaged --check of burned_box.mp4 found the planted mistakes with one decode for all three
+  passes ("OCR ran on 183 of 197 frames": the change detection rarely skips a frame).
+
 ### Open questions
+- Set `ocr.region` for each client whose captions sit in a fixed place: it's what makes the OCR fast.
 - Fill `data/ground_truth.csv` and put the matching videos (`data/ground_truth_videos.csv` lists them, most useful
   first) where the evaluation can find them.
 - The desktop-app spec asks to detect Tesseract; the bot uses RapidOCR (pip, no separate install). Drop that

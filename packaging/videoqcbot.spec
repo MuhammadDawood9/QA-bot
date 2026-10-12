@@ -43,6 +43,12 @@ a = Analysis(
     excludes=["tkinter", "matplotlib", "pytest", "PyQt5", "PyQt6", "IPython", "notebook"],
     noarchive=False,
 )
+# Big files the app never uses (about 49 MB): OpenCV's own ffmpeg video reader (videos are decoded
+# with PyAV) and Qt's software OpenGL fallback (the windows are plain widgets, no OpenGL). The
+# encoder libraries in av.libs look unused too, but libavcodec loads them at start, so they stay.
+UNUSED = ("opencv_videoio_ffmpeg", "opengl32sw")
+a.binaries = [b for b in a.binaries if not Path(b[0]).name.lower().startswith(UNUSED)]
+a.datas = [d for d in a.datas if not Path(d[0]).name.lower().startswith(UNUSED)]
 pyz = PYZ(a.pure)
 
 exe = EXE(
