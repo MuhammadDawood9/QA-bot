@@ -14,8 +14,8 @@ list of issues. See `video-qc-bot-project-plan.md` for the full plan and phase s
   question marks, apostrophes), with caching so reruns are free.
 - Phase 4: captions compared with what is actually said (faster-whisper on the CPU): wrong,
   missing and extra words, and captions that appear before the words are spoken.
-- Report: a Markdown document with a screenshot of every flagged caption, plus a CSV of
-  the issues for Excel or ClickUp (`--report`).
+- Report: a Word document and a Markdown document with a screenshot of every flagged caption,
+  plus a CSV of the issues for Excel or ClickUp (`--report`).
 
 ## Setup
 
@@ -237,15 +237,16 @@ Each run writes a new folder, `reports/<video name>_<date-time>/` (earlier repor
 
 | File | What's in it |
 |---|---|
-| `report.md` | Header (video, captions, client, date, rules version, which checks ran or were skipped and why), a summary table of issues by type and severity, an index of flagged captions with links, one section per flagged caption (screenshot, caption text, every problem with what's wrong, suggested fix and confidence), and an appendix of all captions with the flagged ones in bold |
+| `report.docx` | The report as a Word document: header (video, captions, client, date, rules version, which checks ran or were skipped and why), a summary table of issues by type and severity, an index of flagged captions with clickable times, one section per flagged caption (screenshot, caption text, every problem with what's wrong, suggested fix and confidence), and an appendix of all captions with the flagged ones bold on yellow. A4 pages with page numbers; each caption's section stays on one page; table headers repeat on every page |
+| `report.md` | The same report in Markdown |
 | `screenshots/` | One frame per flagged caption, taken from the middle of the caption so burned-in text is fully on screen (needs `--video` and ffmpeg) |
 | `issues.csv` | One row per issue (time, caption, type, severity, problem, fix, confidence). Opens in Excel with accents and curly quotes intact; usable for a ClickUp import |
 
-Open `report.md` in VS Code (right-click, *Open Preview*) or any Markdown viewer to see the
-screenshots in place. Problems found by two checks on the same caption (for example a doubled
+Open `report.docx` in Word (Windows or Mac), or `report.md` in VS Code (right-click, *Open Preview*).
+Both have the screenshots in place; the Word file carries them inside it, so it can be sent on its own. Problems found by two checks on the same caption (for example a doubled
 word found by both the spelling check and the audio check) appear together in one section.
-Settings are under `report:` in `config.yaml` (output folder, screenshots on/off, frame position
-and width, CSV on/off).
+Settings are under `report:` in `config.yaml`: formats (`["md", "docx"]`), Word page size (`a4` or
+`letter`), output folder, screenshots on/off, frame position and width, CSV on/off.
 
 ### Captions vs audio (Whisper)
 
@@ -314,7 +315,8 @@ src/
   utils/glossary.py    glossary.txt loading
   utils/dictionary.py  pyspellchecker word list + glossary + extra_words.txt
   utils/text.py        word positions, edit distance, sentence breaks
-  report/builder.py    report.md and issues.csv
+  report/builder.py    report data, report.md and issues.csv
+  report/docx_writer.py  report.docx (python-docx)
   report/screenshots.py  frames from the video with ffmpeg
   utils/llm.py         Anthropic API client: request, refusals, token usage and cost
   utils/cache.py       JSON file cache keyed by text hash

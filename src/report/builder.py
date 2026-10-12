@@ -86,9 +86,38 @@ def write_csv(path: Path, issues: Sequence[Issue]) -> None:
                              i.severity, i.original, i.message, i.suggestion, f"{i.confidence:.2f}"])
 
 
-def build_report(captions: Sequence[Caption], issues: Sequence[Issue], info: ReportInfo,
-                 settings: dict, ffmpeg: str | None = None) -> Path:
-    """Write the report folder and return the path of report.md."""
+@dataclass
+class ReportData:
+    """Everything a report writer needs, worked out once so every format says the same thing."""
+    info: ReportInfo
+    folder: Path
+    captions: list[Caption]                      # in time order
+    issues: list[Issue]                          # in time order, worst first within a caption
+    by_caption: dict[int, list[Issue]]
+    caps: dict[int, Caption]
+    flagged: list[int]                           # caption ids with issues, in time order
+    shots: dict[int, tuple[str, float]]          # caption id -> (image path relative to folder, frame time)
+    wanted_shots: bool                           # screenshots were attempted (a video was given)
+    settings: dict
+
+    def counts(self) -> Counter:
+        return Counter((i.type, i.severity) for i in self.issues)
+
+    def types(self) -> list[str]:
+        return sorted({i.type for i in self.issues}, key=lambda t: list(LABELS).index(t) if t in LABELS else 99)
+
+    def caption_text(self, cid: int) -> str:
+        return self.caps[cid].flat_text if cid in self.caps else self.by_caption[cid][0].original
+
+    def on_screen(self, cid: int) -> str:
+        cap = self.caps.get(cid)
+        return (f"{format_timestamp(cap.start)} - {format_timestamp(cap.end)}" if cap
+                else format_timestamp(self.by_caption[cid][0].timestamp))
+
+
+def prepare(captions: Sequence[Caption], issues: Sequence[Issue], info: ReportInfo,
+            settings: dict, ffmpeg: str | None = None) -> ReportData:
+    """Create the report folder, take the screenshots, and group the issues by caption."""
     folder = report_folder(Path(settings.get("output_dir", "reports")), info)
     folder.mkdir(parents=True)
     issues = sorted(issues, key=lambda i: (i.timestamp, i.caption_id, _RANK[i.severity]))
@@ -98,8 +127,8 @@ def build_report(captions: Sequence[Caption], issues: Sequence[Issue], info: Rep
     caps = {c.id: c for c in captions}
     flagged = sorted(by_caption, key=lambda cid: (caps[cid].start if cid in caps else by_caption[cid][0].timestamp, cid))
 
-    shots: dict[int, tuple[str, float]] = {}       # caption id -> (image path, frame time)
-    want_shots = settings.get("include_screenshots", True) and info.video is not None and ffmpeg
+    shots: dict[int, tuple[str, float]] = {}
+    want_shots = bool(settings.get("include_screenshots", True) and info.video is not None and ffmpeg)
     if want_shots:
         for cid in flagged:
             cap = caps.get(cid)
@@ -109,17 +138,37 @@ def build_report(captions: Sequence[Caption], issues: Sequence[Issue], info: Rep
             if grab_frame(ffmpeg, info.video, at, folder / name, settings.get("screenshot_width", 640)):
                 shots[cid] = (name, at)
 
-    lines = _header(info, captions, issues, flagged)
-    lines += _summary(issues)
-    lines += _index(flagged, by_caption, caps)
-    lines += _details(flagged, by_caption, caps, shots, info, bool(want_shots))
-    lines += _appendix(captions, by_caption)
+    return ReportData(info=info, folder=folder, captions=sorted(captions, key=lambda c: (c.start, c.id)),
+                      issues=issues, by_caption=dict(by_caption), caps=caps, flagged=flagged, shots=shots,
+                      wanted_shots=want_shots, settings=settings)
 
-    report = folder / "report.md"
-    report.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+
+def write_markdown(data: ReportData) -> Path:
+    lines = _header(data.info, data.captions, data.issues, data.flagged)
+    lines += _summary(data.issues)
+    lines += _index(data.flagged, data.by_caption, data.caps)
+    lines += _details(data.flagged, data.by_caption, data.caps, data.shots, data.info, data.wanted_shots)
+    lines += _appendix(data.captions, data.by_caption)
+    path = data.folder / "report.md"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    return path
+
+
+def build_report(captions: Sequence[Caption], issues: Sequence[Issue], info: ReportInfo,
+                 settings: dict, ffmpeg: str | None = None) -> list[Path]:
+    """Write the report folder in every format listed in settings["formats"]. Returns the files written."""
+    data = prepare(captions, issues, info, settings, ffmpeg)
+    formats = [f.lower() for f in settings.get("formats", ["md"])]
+    written = []
+    if "md" in formats:
+        written.append(write_markdown(data))
+    if "docx" in formats:
+        from src.report.docx_writer import write_docx   # python-docx is only loaded when a Word file is wanted
+        written.append(write_docx(data))
     if settings.get("write_csv", True):
-        write_csv(folder / "issues.csv", issues)
-    return report
+        write_csv(data.folder / "issues.csv", data.issues)
+        written.append(data.folder / "issues.csv")
+    return written
 
 
 def _header(info, captions, issues, flagged) -> list[str]:

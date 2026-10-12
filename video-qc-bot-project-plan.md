@@ -451,7 +451,7 @@ The report document, color checks, OCR, the ClickUp API and any UI are on hold u
 | 2. Spelling, capitalization, spacing | pyspellchecker + glossary.txt, forced spellings, rule-based checks from rules.yaml, client rules | **Done (2026-10-12)** |
 | 3. Punctuation via Anthropic API | Windowed prompts (Section 7.4), JSON-only output, confidence threshold, caching, batching, key from `ANTHROPIC_API_KEY` | **Done (2026-10-12)**, tested with a fake API only; first live run pending |
 | 4. Whisper transcript vs captions | faster-whisper (CPU, int8), cached transcripts, glossary as initial_prompt, alignment, wrong/missing/extra/early-word flags | **Done (2026-10-12)**, tested on a synthetic sample video; real-video run pending |
-| Report (Milestone 3) | Markdown report with screenshots, summary, appendix; CSV export | **Done (2026-10-12)**, Markdown + CSV; Word/PDF not built |
+| Report (Milestone 3) | Report with screenshots, summary, appendix; CSV export | **Done (2026-10-12)**: Word (.docx) + Markdown + CSV; PDF not built |
 
 ### Machines
 - Develop on Windows (Lenovo ThinkPad), run on a MacBook (specs to come). All code is cross-platform: pathlib everywhere,
@@ -584,8 +584,18 @@ The report document, color checks, OCR, the ClickUp API and any UI are on hold u
   for now; the report milestone can merge issues on the same caption.
 
 ### Decisions made for the report (Milestone 3)
-- **Format: Markdown + CSV** (the plan's first step; no new dependency). Word (python-docx) or PDF can be added later
-  from the same data if Markdown isn't convenient to read.
+- **Formats: Word + Markdown + CSV** (`report.formats` in config). Word added on request with **python-docx 1.2.0** (named
+  in the plan; it and lxml 6.1.3 checked to install on Windows, macOS Intel and Apple Silicon). Both documents come
+  from the same prepared data, so they always say the same thing.
+- **Word layout:** A4 by default (`page_size: letter` possible), 2 cm margins, Calibri 10 pt, built-in Title/Heading
+  styles (Word's Navigation Pane works), grid tables with fixed column widths, shaded header rows that repeat on every
+  page, rows that don't split across pages, severity in colour (high red, medium orange, low grey), the caption text in
+  the Quote style, screenshots embedded at 12 cm, each caption's section kept on one page, clickable times and caption
+  numbers that jump to the caption's section (bookmarks), flagged appendix rows bold on light yellow, footer with the
+  title and page number. Control characters in caption text are removed so the file is always valid.
+- **Checked in real Word:** the file passes the Office XML schema check, and it was opened in Microsoft Word on the
+  Windows machine, exported to PDF and inspected page by page. That found two layout problems, now fixed: a too-narrow
+  Confidence column and caption sections splitting across pages.
 - **`--report` flag**; each run writes `reports/<video or srt name>_<YYYYmmdd-HHMMSS>/` and never overwrites an earlier one.
 - **Grouped per caption, not per issue:** one section, one screenshot, all problems for that caption, worst first. This
   also resolves the Phase 4 overlap (doubled word reported by both `repeated_word` and `extra_word`).
@@ -600,7 +610,7 @@ The report document, color checks, OCR, the ClickUp API and any UI are on hold u
   caption the issue is about, and it is ready as OCR test material later.
 
 ### Open questions
-- Is Markdown comfortable to read, or should the report also be a Word document or PDF?
+- Is a PDF version also wanted? (Word can save the .docx as PDF in the meantime.)
 - Run on a real client video and its SRT (realistic voices, music, several speakers).
 - First live run of the punctuation check: confirm the cost and quality on a real caption file.
 - MacBook specs (sets `whisper_model_size` and `cpu_threads`).

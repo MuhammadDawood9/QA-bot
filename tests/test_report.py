@@ -33,8 +33,8 @@ ISSUES = [
 
 
 def settings(tmp_path, **kw):
-    return {"output_dir": tmp_path / "reports", "include_screenshots": True, "screenshot_at": "middle",
-            "screenshot_width": 640, "write_csv": True, **kw}
+    return {"output_dir": tmp_path / "reports", "formats": ["md"], "include_screenshots": True,
+            "screenshot_at": "middle", "screenshot_width": 640, "write_csv": True, **kw}
 
 
 def info(**kw):
@@ -44,7 +44,8 @@ def info(**kw):
 
 
 def build(tmp_path, issues=ISSUES, video=None, ffmpeg=None, **kw):
-    report = build_report(CAPTIONS, issues, info(video=video), settings(tmp_path, **kw), ffmpeg)
+    written = build_report(CAPTIONS, issues, info(video=video), settings(tmp_path, **kw), ffmpeg)
+    report = written[0]
     return report, report.read_text(encoding="utf-8")
 
 
@@ -172,7 +173,7 @@ def test_cli_report_flag(monkeypatch, tmp_path, capsys):
     err = capsys.readouterr().err
     [folder] = (tmp_path / "out").iterdir()
     text = (folder / "report.md").read_text(encoding="utf-8")
-    assert f"report: {folder / 'report.md'}" in err
+    assert f"report: {folder / 'report.md'}" in err and f"report: {folder / 'report.docx'}" in err
     assert "# QC report: sample_mistakes.srt" in text and "- **Client:** E8D" in text
     assert "  - Captions vs audio (Whisper): not run (no --video)" in text
     assert "  - Punctuation (Anthropic API): skipped (no API key)" in text

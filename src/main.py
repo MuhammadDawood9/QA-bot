@@ -109,7 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--video", type=Path, default=None,
                         help="the video, to compare captions with what is said (Whisper; cached per video)")
     parser.add_argument("--report", action="store_true",
-                        help="also write a report folder (report.md, screenshots, issues.csv) under reports/")
+                        help="also write a report folder (report.md, report.docx, screenshots, issues.csv) under reports/")
     return parser
 
 
@@ -156,8 +156,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(summary, file=sys.stderr)   # stderr, so --json output stays clean
 
     if args.report:
-        report = write_report(captions, issues, config, client, context, args)
-        print(f"report: {report}", file=sys.stderr)
+        for path in write_report(captions, issues, config, client, context, args):
+            print(f"report: {path}", file=sys.stderr)
     return 0
 
 
@@ -192,7 +192,7 @@ def check_status_lines(context: CheckContext, args) -> list[str]:
     return lines
 
 
-def write_report(captions, issues, config: dict, client: dict, context: CheckContext, args) -> Path:
+def write_report(captions, issues, config: dict, client: dict, context: CheckContext, args) -> list[Path]:
     settings = dict(config.get("report", {}))
     settings["output_dir"] = Path(config["_root"]) / settings.get("output_dir", "reports")
     ffmpeg = None
