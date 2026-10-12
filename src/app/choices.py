@@ -29,8 +29,15 @@ def is_video(path: Path) -> bool:
 
 
 def videos_in(paths: Iterable[Path]) -> list[Path]:
-    """The video files among dropped paths (folders and other files are ignored)."""
-    return [p for p in paths if p.is_file() and is_video(p)]
+    """The video files among dropped paths, each once. A dropped folder gives the videos directly
+    inside it, by name (not its subfolders); other files are ignored."""
+    found: list[Path] = []
+    for p in paths:
+        if p.is_dir():
+            found += sorted((c for c in p.iterdir() if c.is_file() and is_video(c)), key=lambda c: c.name.lower())
+        elif p.is_file() and is_video(p):
+            found.append(p)
+    return list(dict.fromkeys(found))
 
 
 def file_dialog_filter() -> str:

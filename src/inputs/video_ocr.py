@@ -35,7 +35,7 @@ from src.utils.system import file_sha256
 log = logging.getLogger("qcbot.ocr")
 
 # Bump when the reading or grouping logic changes, so old cached captions aren't reused.
-OCR_VERSION = "2"
+OCR_VERSION = "3"
 
 # image (H x W x 3, RGB, uint8) -> text boxes with positions in pixels of that image
 OcrEngine = Callable[[object], list[TextBox]]
@@ -155,19 +155,42 @@ def rapidocr_engine(settings: dict) -> OcrEngine:
     except ImportError as exc:      # pragma: no cover - only without the package installed
         raise OcrError("the OCR package is missing: pip install -r requirements.txt") from exc
 
-    # limit_type "max" shrinks big frames to det_max_side; the package default ("min") enlarges
-    # a wide, short caption strip several times over and makes every frame about 5x slower.
-    ocr = RapidOCR(det_limit_type="max", det_limit_side_len=int(settings.get("det_max_side", 960)),
+    import cv2
+    import numpy as np
+
+    # limit_type "max": the package default ("min") enlarges a wide, short caption strip several
+    # times over and makes every frame about 5x slower. But with "max", RapidOCR 1.4 ignores the
+    # size it's given and finds text at up to 2000 px, so a 1080x1920 frame went in nearly whole
+    # (2.4 s instead of 0.5 s). Bigger frames are therefore shrunk here for finding the text, and
+    # each line is still read from the full-size frame, so reading accuracy doesn't change.
+    det_side = int(settings.get("det_max_side", 960))
+    ocr = RapidOCR(det_limit_type="max", det_limit_side_len=det_side,
                    intra_op_num_threads=int(settings.get("cpu_threads", -1)))
 
-    def read(image) -> list[TextBox]:
-        result, _ = ocr(image[:, :, ::-1].copy(), use_cls=False)    # RapidOCR expects BGR, like OpenCV
+    def boxes_of(result) -> list[TextBox]:
         boxes = []
         for points, text, score in result or []:
             xs, ys = [p[0] for p in points], [p[1] for p in points]
             boxes.append(TextBox(text=str(text), score=float(score),
                                  left=min(xs), top=min(ys), right=max(xs), bottom=max(ys)))
         return boxes
+
+    def read(image) -> list[TextBox]:
+        bgr = image[:, :, ::-1].copy()                              # RapidOCR expects BGR, like OpenCV
+        h, w = bgr.shape[:2]
+        if max(h, w) <= det_side:
+            result, _ = ocr(bgr, use_cls=False)
+            return boxes_of(result)
+        k = det_side / max(h, w)
+        small = cv2.resize(bgr, (max(1, round(w * k)), max(1, round(h * k))), interpolation=cv2.INTER_AREA)
+        found, _ = ocr(small, use_cls=False, use_rec=False)          # boxes only, in the small frame
+        if not found:
+            return []
+        points = (np.array(found, dtype=np.float32) * np.array([w / small.shape[1], h / small.shape[0]],
+                                                                 dtype=np.float32))
+        crops = ocr.get_crop_img_list(bgr, points)                   # each line cut from the full frame
+        texts, _ = ocr.text_rec(crops)
+        return boxes_of([(p.tolist(), t[0], t[1]) for p, t in zip(points, texts) if float(t[1]) >= ocr.text_score])
     return read
 
 

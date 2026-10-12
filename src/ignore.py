@@ -124,14 +124,25 @@ def _quote(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def glossary_line(issue: Issue) -> str | None:
+    """For an unknown word that's really a name or a brand: the glossary line that makes the
+    spelling check accept it (and catch misspellings of it). None for other flags."""
+    from src.checks.spelling import flagged_word
+
+    return flagged_word(issue)
+
+
 def rule_line(issue: Issue, client: str | None, video: Path | None) -> str:
-    """One ignore.yaml line that hides this flag: by its words for caption flags (so the same
-    words are fine in every video of that client), by video and time for color flags."""
+    """One ignore.yaml line that hides this flag: by the unknown word for spelling flags, by its
+    words for other caption flags (so the same words are fine in every video of that client), by
+    video and time for color flags."""
     fields = []
     if client:
         fields.append(f"client: {client}")
     fields.append(f"type: {issue.type}")
-    words = " ".join(issue.original.split())
+    from src.checks.spelling import flagged_word
+
+    words = flagged_word(issue) or " ".join(issue.original.split())   # an unknown word: just that word
     if issue.type in COLOR_ISSUES or not words or issue.caption_id < 0:
         if video is not None:
             fields.append(f"video: {_quote(video.name)}")

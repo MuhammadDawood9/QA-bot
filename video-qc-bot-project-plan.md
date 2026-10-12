@@ -815,6 +815,28 @@ Windows 10/11 and macOS (Intel, also Apple Silicon); OS-specific code only in `s
   --selftest all good; packaged --check of burned_box.mp4 found the planted mistakes with one decode for all three
   passes ("OCR ran on 183 of 197 frames": the change detection rarely skips a frame).
 
+### Faster OCR, a queue, glossary lines (2026-10-13)
+- **OCR 1.4-2.7x faster (2):** with limit_type "max", RapidOCR 1.4.4 ignores det_limit_side_len and picks 960 /
+  1500 / 2000 from the image size, so a 1080x1920 frame was searched for text at 1920x1088 (2.4 s) instead of
+  960 px (0.5 s): `det_max_side` never applied to full frames. Bigger frames are now shrunk to det_max_side for
+  finding text, and each line is still read from the full-size frame (RapidOCR's own det call with use_rec=False,
+  then its get_crop_img_list and text_rec). Shrinking the whole frame instead lost spaces ("forSTATE").
+  Measured: del.mp4 287 -> 105 s; the samples 106 -> 70, 121 -> 86, 104 -> 69 s.
+- **Final caption text chosen by letters, not words:** the new engine dropped spaces in other frames than the old
+  one, which exposed a weakness: complete readings with dropped spaces ("MarkMcGwirehit", 1 word) looked shorter
+  than incomplete ones ("Mark McGwire"), which won. Completeness is now the letter count, votes are on the text
+  without spaces, and the winning text's reading with the most word breaks gives the spacing. OCR_VERSION 3.
+  Against the truth SRTs of the three samples: 46 of 49 captions exact (old: 45); the 3 left were wrong before
+  too (spaces in a big stylized title, a comma read as a full stop).
+- **Queue (3):** dropping or picking several videos or a folder (its videos, by name, not subfolders) checks
+  them one after the other; drops while busy join the queue. In a batch only the last report opens, and a failure
+  is a notification instead of a blocking dialog. Cancel check stops the current one and goes on; Clear queue
+  drops the rest. `CheckRunner.idle` fires once the thread is gone, which starts the next.
+- **Glossary lines (4):** `spelling.flagged_word` gets the unknown word back from the flag's message. The ignore
+  line for it is now just that word (so it covers every caption with it), and the report's last table has an "Or
+  add to the glossary" column; tray menu Edit glossary. The glossary is the better fix for a correct name: it also
+  catches misspellings of it.
+
 ### Open questions
 - Set `ocr.region` for each client whose captions sit in a fixed place: it's what makes the OCR fast.
 - Fill `data/ground_truth.csv` and put the matching videos (`data/ground_truth_videos.csv` lists them, most useful

@@ -304,8 +304,57 @@ def test_menu_toggles_and_client_choice_are_saved(companion, settings):
     assert Settings(settings.path).get("last_client") == "E8C"
 
 
-def test_second_drop_while_busy_is_refused(companion, fake):
-    fake.steps, fake.delay = 300, 0.01
-    companion.start_check(Path("clip.mp4"))
-    companion.videos_dropped([Path("other.mp4")])
-    assert len(fake.calls) <= 1 and companion.runner.video == Path("clip.mp4")
+def test_second_drop_while_busy_is_queued(companion, fake):
+    fake.steps, fake.delay = 20, 0.01
+    companion.videos_dropped([Path("clip.mp4")])
+    companion.videos_dropped([Path("other.mp4"), Path("clip.mp4")])          # the running one isn't added again
+    assert companion.queue == [Path("other.mp4")] and companion.runner.video == Path("clip.mp4")
+    assert wait_for(lambda: len(fake.calls) == 2 and not companion.runner.busy)
+    assert [c[0] for c in fake.calls] == [Path("clip.mp4"), Path("other.mp4")] and companion.queue == []
+
+
+def test_a_batch_runs_in_order_and_opens_only_the_last_report(companion, fake, settings):
+    fake.steps = 3
+    videos = [Path("E8D_a.mp4"), Path("b.mp4"), Path("c.mp4")]
+    companion.videos_dropped(videos)
+    assert wait_for(lambda: len(fake.calls) == 3 and not companion.runner.busy and companion.mascot.state == "done")
+    assert [c[0] for c in fake.calls] == videos
+    assert len(companion.opened) == 1                                       # not one Word window per video
+
+
+def test_a_failure_mid_batch_doesnt_stop_it(companion, fake):
+    real_run = fake.run_qc
+
+    def sometimes(video, *a, **kw):
+        if video.name == "bad.mp4":
+            raise worker.QCError("The video has no audio")
+        return real_run(video, *a, **kw)
+    worker.run_qc = sometimes
+    try:
+        companion.videos_dropped([Path("bad.mp4"), Path("good.mp4")])
+        assert wait_for(lambda: companion.mascot.state == "done" and not companion.runner.busy)
+        assert companion.errors == []                                       # no blocking dialog mid-batch
+        assert [c[0] for c in fake.calls] == [Path("good.mp4")]
+    finally:
+        worker.run_qc = fake.run_qc
+
+
+def test_clear_queue(companion, fake):
+    fake.steps, fake.delay = 100, 0.01
+    companion.videos_dropped([Path("a.mp4"), Path("b.mp4"), Path("c.mp4")])
+    menu = companion.build_menu()                                           # kept, or Qt frees its items
+    assert "Clear queue (2 waiting)" in [a.text() for a in menu.actions()]
+    companion.clear_queue()
+    companion.cancel_check()
+    assert wait_for(lambda: not companion.runner.busy)
+    assert [c[0] for c in fake.calls] == [Path("a.mp4")]
+
+
+def test_a_dropped_folder_gives_its_videos_by_name(tmp_path):
+    folder = tmp_path / "Lot du 12 été"
+    (folder / "sub").mkdir(parents=True)
+    for name in ("b.mov", "A.mp4", "notes.txt", "sub/deep.mp4"):
+        (folder / name).write_bytes(b"x")
+    loose = tmp_path / "z.mp4"
+    loose.write_bytes(b"x")
+    assert videos_in([folder, loose, folder / "A.mp4"]) == [folder / "A.mp4", folder / "b.mov", loose]

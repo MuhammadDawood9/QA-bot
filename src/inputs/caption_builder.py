@@ -29,6 +29,11 @@ from src.models import Caption
 _NOT_WORD = re.compile(r"[^\w\s]")
 
 
+def _letters(text: str) -> str:
+    """The text without its spaces and line breaks (which the OCR may drop)."""
+    return "".join(text.split())
+
+
 @dataclass(frozen=True)
 class TextBox:
     """One piece of text the OCR found. Positions are fractions of the full frame (0..1)."""
@@ -144,21 +149,24 @@ def continues(track_text: str, new_text: str, same_ratio: float) -> float:
 def final_text(readings: Sequence[Reading]) -> tuple[str, float]:
     """The caption's text and the OCR's confidence in it.
 
-    Only readings with the full word count count (the earlier ones of a word-by-word caption are
-    incomplete). A word count seen in only one frame loses to one seen in several, so a single
-    noisy frame with a stray extra word doesn't decide the caption. Among the full readings the
-    most common text wins, ties going to the higher OCR score. Confidence is that text's share of
-    the full readings times its mean OCR score."""
-    counts = Counter(r.word_count for r in readings)
+    Only complete readings count (the earlier ones of a word-by-word caption are shorter). Length
+    is counted in letters, not words: the OCR often drops the spaces between words, so
+    "MarkMcGwirehit" is as complete as "Mark McGwire hit" though it reads as one word. A length
+    seen in only one frame loses to one seen in several, so a single noisy frame with a stray
+    extra letter doesn't decide the caption. Among the complete readings the most common text
+    (spaces aside) wins, ties going to the higher OCR score; of its readings, the one with the
+    most word breaks gives the text, since the OCR drops spaces far more often than it adds them.
+    Confidence is that text's share of the complete readings times its mean OCR score."""
+    counts = Counter(len(_letters(r.flat)) for r in readings)
     seen_twice = [n for n, c in counts.items() if c >= 2]
     target = max(seen_twice) if seen_twice else max(counts)
-    full = [r for r in readings if r.word_count == target]
+    full = [r for r in readings if len(_letters(r.flat)) == target]
 
     votes: dict[str, list[Reading]] = {}
     for r in full:
-        votes.setdefault(r.flat, []).append(r)
+        votes.setdefault(_letters(r.flat), []).append(r)
     winner = max(votes.values(), key=lambda rs: (len(rs), mean(r.score for r in rs)))
-    best = max(winner, key=lambda r: r.score)            # keeps that reading's line breaks
+    best = max(winner, key=lambda r: (r.word_count, r.score))     # keeps that reading's line breaks
     confidence = len(winner) / len(full) * mean(r.score for r in winner)
     return best.text, round(min(1.0, max(0.0, confidence)), 3)
 

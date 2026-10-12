@@ -21,7 +21,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
-from src.ignore import rule_line
+from src.ignore import glossary_line, rule_line
 from src.models import SEVERITIES
 from src.report.builder import ReportData, captions_source, label
 from src.utils.timecode import format_timestamp
@@ -266,10 +266,16 @@ def write_docx(data: ReportData) -> Path:
     if data.issues:
         doc.add_heading("Hide a flag next time", level=1)
         doc.add_paragraph("If a flag is a false alarm, copy its line under \"ignore:\" in ignore.yaml (right-click the "
-                          "mascot, Edit ignore list). For a word that's always fine, shorten the text to that word.")
-        t = table(doc, ["Time", "Line for ignore.yaml"], [2.2, content_cm - 2.2])
+                          "mascot, Edit ignore list). If an unknown word is a correct name or brand, add it to the "
+                          "glossary instead (Edit glossary, or glossary: in the client's file): then misspellings "
+                          "of it are caught too. Start the line with = to make that exact spelling the only "
+                          "accepted one.")
+        gloss_cm = 5.0
+        t = table(doc, ["Time", "Line for ignore.yaml", "Or add to the glossary"],
+                  [2.2, content_cm - 2.2 - gloss_cm, gloss_cm])
         for issue in data.issues:
-            add_row(t, [format_timestamp(issue.timestamp), rule_line(issue, info.client, info.video)])
+            add_row(t, [format_timestamp(issue.timestamp), rule_line(issue, info.client, info.video),
+                        glossary_line(issue) or ""])
 
     path = data.folder / docx_name(data)
     doc.save(str(path))

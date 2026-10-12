@@ -102,6 +102,18 @@ def _spelling_issues(cap: Caption, toks: list[Token], settings: dict, context: C
     return issues
 
 
+_FLAGGED_WORD = re.compile(r'^(?:Unknown word|Possible misspelling:) "([^"]+)"')
+
+
+def flagged_word(issue: Issue) -> str | None:
+    """The word an unknown-word flag is about ("McGwire"), for an ignore rule or a glossary line;
+    None for any other flag."""
+    if issue.type != SPELLING:
+        return None
+    match = _FLAGGED_WORD.match(issue.message)
+    return match.group(1) if match else None
+
+
 def _lookalike_issues(cap: Caption, toks: list[Token]) -> list[Issue]:
     issues = []
     for tok in toks:

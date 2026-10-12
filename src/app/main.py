@@ -52,12 +52,14 @@ class CompanionApp:
             lambda pos: self.build_menu(self.mascot).exec(self.mascot.mapToGlobal(pos)))
         self.mascot.clicked.connect(self.pick_video)
         self.mascot.files_dropped.connect(self.videos_dropped)
+        self.queue: list[Path] = []                 # videos waiting for the current check to end
 
         self.runner = CheckRunner()
         self.runner.progress.connect(self._on_progress)
         self.runner.finished.connect(self._on_finished)
         self.runner.failed.connect(self._on_failed)
         self.runner.cancelled.connect(self._on_cancelled)
+        self.runner.idle.connect(self._start_next)
 
         self.tray = self._make_tray()
         app.aboutToQuit.connect(self.mascot.remember_position)
@@ -94,9 +96,11 @@ class CompanionApp:
         status.setEnabled(False)
         menu.addSeparator()
 
-        menu.addAction("Check a video...", self.pick_video).setEnabled(not self.runner.busy)
+        menu.addAction("Check a video...", self.pick_video)        # while busy: added to the queue
         cancel = menu.addAction("Cancel check", self.cancel_check)
         cancel.setEnabled(self.runner.busy)
+        clear = menu.addAction(f"Clear queue ({len(self.queue)} waiting)", self.clear_queue)
+        clear.setEnabled(bool(self.queue))
 
         clients = menu.addMenu("Client")
         guess = clients.addAction("Guess from the file name")
@@ -140,6 +144,7 @@ class CompanionApp:
         menu.addAction("Open last report", self.open_last_report).setEnabled(bool(last) and Path(last).is_file())
         menu.addAction("Open reports folder", self.open_reports_folder)
         menu.addAction("Edit ignore list", self.open_ignore_list)
+        menu.addAction("Edit glossary", self.open_glossary)
         menu.addAction("Settings...", self.open_settings)
         login = menu.addAction("Start at login")
         login.setCheckable(True)
@@ -183,21 +188,44 @@ class CompanionApp:
     # --- starting a check ------------------------------------------------------------------
 
     def pick_video(self) -> None:
-        if self.runner.busy:
-            self.notify("Already checking", f"Still checking {self.runner.video.name}. Right-click to cancel.")
-            return
         start = self.settings.get("last_folder") or str(Path.home())
-        name, _ = QFileDialog.getOpenFileName(None, "Choose a video to check", start, file_dialog_filter())
-        if name:
-            self.start_check(Path(name))
+        names, _ = QFileDialog.getOpenFileNames(None, "Choose videos to check", start, file_dialog_filter())
+        if names:
+            self.enqueue([Path(n) for n in names])
 
     def videos_dropped(self, videos: list) -> None:
-        if self.runner.busy:
-            self.notify("Already checking", f"Still checking {self.runner.video.name}. Right-click to cancel.")
+        self.enqueue([Path(v) for v in videos])
+
+    def enqueue(self, videos: list[Path]) -> None:
+        """Check these videos one after the other: now if nothing is running, else after the
+        current check and the ones already waiting. A video already running or waiting is skipped."""
+        current = self.runner.video if self.runner.busy else None
+        new = [v for v in dict.fromkeys(videos) if v != current and v not in self.queue]
+        if not new:
             return
-        if len(videos) > 1:
-            self.notify("One video at a time", f"Checking {videos[0].name}; the other {len(videos) - 1} were left out.")
-        self.start_check(Path(videos[0]))
+        self.queue += new
+        if self.runner.busy:
+            self.notify("Added to the queue", f"{self._count(new)} waiting to be checked after "
+                                              f"{self.runner.video.name} ({len(self.queue)} in the queue).")
+            return
+        self._start_next()
+        if self.queue:
+            self.notify("Checking a batch", f"Checking {self.runner.video.name}; {self._count(self.queue)} waiting.")
+
+    @staticmethod
+    def _count(videos: list) -> str:
+        return f"{len(videos)} video{'s' if len(videos) != 1 else ''}"
+
+    def _start_next(self) -> None:
+        if self.queue and not self.runner.busy:
+            self.start_check(self.queue.pop(0))
+
+    def clear_queue(self) -> None:
+        if self.queue:
+            log.info("queue cleared: %s", ", ".join(v.name for v in self.queue))
+            self.queue.clear()
+            self.status = f"Checking {self.runner.video.name}; queue cleared" if self.runner.busy else \
+                "Queue cleared. Drop a video on me"
 
     def start_check(self, video: Path) -> None:
         client, why = choose_client(video, self.settings.get("last_client"), bool(self.settings.get("guess_client")),
@@ -221,30 +249,37 @@ class CompanionApp:
 
     # --- results ---------------------------------------------------------------------------
 
+    def _waiting(self) -> str:
+        return f" ({len(self.queue)} more waiting)" if self.queue else ""
+
     def _on_progress(self, stage: str, fraction: float) -> None:
         video = self.runner.video.name if self.runner.video else "the video"
-        self.status = f"{stage}: {video}, {fraction:.0%}"
+        self.status = f"{stage}: {video}, {fraction:.0%}{self._waiting()}"
         self.mascot.set_progress(stage, fraction)
 
     def _on_finished(self, count: int, report: str) -> None:
         video = self.runner.video.name if self.runner.video else "the video"
         self.mascot.set_state("done", count)
         self.settings.set("last_report", report)
-        self.status = f"Done: {count} issue{'s' if count != 1 else ''} in {video}"
-        self.notify("QC check done", f"{count} issue{'s' if count != 1 else ''} found in {video}.")
-        if self.settings.get("open_report"):
+        self.status = f"Done: {count} issue{'s' if count != 1 else ''} in {video}{self._waiting()}"
+        self.notify("QC check done", f"{count} issue{'s' if count != 1 else ''} found in {video}."
+                                     + (f" Next: {self.queue[0].name}{self._waiting()}." if self.queue else ""))
+        if self.settings.get("open_report") and not self.queue:     # in a batch, only the last one opens
             open_path(Path(report))
 
     def _on_failed(self, message: str) -> None:
+        video = self.runner.video.name if self.runner.video else "the video"
         self.mascot.set_state("error")
-        self.status = "The last check failed (see Open log file)"
-        self.notify("QC check failed", message, error=True)
-        show_error(None, message, self.log_file)
+        self.status = f"The check of {video} failed (see Open log file){self._waiting()}"
+        self.notify("QC check failed", f"{video}: {message}", error=True)
+        if not self.queue:                  # in a batch, the notification is enough: the rest carries on
+            show_error(None, message, self.log_file)
 
     def _on_cancelled(self) -> None:
         self.mascot.set_state("idle")
-        self.status = "Check cancelled. Drop a video on me"
-        self.notify("QC check cancelled", "Nothing was written.")
+        self.status = ("Check cancelled; going on with the queue" if self.queue
+                       else "Check cancelled. Drop a video on me")
+        self.notify("QC check cancelled", "Nothing was written." + (f" Next: {self.queue[0].name}." if self.queue else ""))
 
     def notify(self, title: str, message: str, error: bool = False) -> None:
         log.info("%s: %s", title, message)
@@ -262,6 +297,12 @@ class CompanionApp:
     def open_reports_folder(self) -> None:
         self.reports_dir.mkdir(parents=True, exist_ok=True)
         open_path(self.reports_dir)
+
+    def open_glossary(self) -> None:
+        """glossary.txt (names and brands the spelling check accepts) in the default editor."""
+        from src.config import resolve_path
+
+        open_path(resolve_path(self.config, "glossary_file"))
 
     def open_ignore_list(self) -> None:
         """ignore.yaml in the default editor (created empty if it was deleted)."""
@@ -306,6 +347,7 @@ class CompanionApp:
         self.mascot.raise_()
 
     def quit(self) -> None:
+        self.queue.clear()
         if self.runner.busy:
             self.runner.cancel()
             self.runner.wait(15_000)

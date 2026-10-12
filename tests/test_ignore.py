@@ -80,7 +80,7 @@ def test_apply_splits_kept_and_hidden(tmp_path):
     issue(kind="uncaptioned_speech", text="", t=12.0, cid=-2),             # no caption at all
 ])
 def test_report_lines_hide_exactly_their_flag(tmp_path, flag):
-    video = Path("D:/Vidéos/Willy & Mitzie: final.mp4")
+    video = Path("D:/VidÃ©os/Willy & Mitzie: final.mp4")
     line = ignore.rule_line(flag, "E3AC", video)
     rules = rules_from(tmp_path, "ignore:\n  " + line + "\n")
     assert len(rules) == 1, line
@@ -110,3 +110,40 @@ def test_report_offers_a_line_per_flag(tmp_path):
     lines = doc.tables[-1]
     assert len(lines.rows) == 1 + len(result)
     assert lines.rows[1].cells[1].text.startswith("- {client: E8D, type: ")
+
+
+# --- unknown words: ignore just the word, or add it to the glossary ---------------------------
+
+def spelling_flag(message, text="We met Mark McGwire today"):
+    return Issue(3, 5.0, "spelling", "low", text, message, "", 0.5)
+
+
+def test_the_flagged_word_comes_from_the_message():
+    from src.checks.spelling import flagged_word
+
+    assert flagged_word(spelling_flag('Unknown word "McGwire": a misspelling, or a name to add to glossary.txt?')) == \
+        "McGwire"
+    assert flagged_word(spelling_flag('Possible misspelling: "hourse".')) == "hourse"
+    assert flagged_word(spelling_flag('"McGuire" should be spelled "McGwire" (glossary).')) is None
+    assert flagged_word(issue(kind="capitalization")) is None
+
+
+def test_an_unknown_word_rule_covers_every_caption_with_it(tmp_path):
+    flag = spelling_flag('Unknown word "McGwire": a misspelling, or a name to add to glossary.txt?')
+    line = ignore.rule_line(flag, "E7SS", None)
+    assert line == '- {client: E7SS, type: spelling, text: "McGwire"}'
+    rule, = rules_from(tmp_path, "ignore:\n  " + line + "\n")
+    other = spelling_flag(flag.message, text="McGwire hit 70 home runs")
+    assert rule.matches(flag, "E7SS", None) and rule.matches(other, "E7SS", None)
+    assert ignore.glossary_line(flag) == "McGwire" and ignore.glossary_line(issue(kind="capitalization")) is None
+
+
+def test_report_offers_glossary_lines_for_unknown_words(tmp_path):
+    result = run_qc(None, "E8D", options=QCOptions(srt_path=SRT, use_llm=False))
+    doc = Document(str(build_docx_report(result, output_dir=tmp_path)))
+    lines = doc.tables[-1]
+    assert [c.text for c in lines.rows[0].cells] == ["Time", "Line for ignore.yaml", "Or add to the glossary"]
+    from src.checks.spelling import flagged_word
+
+    for row, flag in zip(lines.rows[1:], result):
+        assert row.cells[2].text == (flagged_word(flag) or "")

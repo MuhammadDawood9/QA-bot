@@ -139,6 +139,13 @@ Example output:
 Severity tells you how sure the bot is that it's a real mistake: `high` (almost always right),
 `medium` (usually right), `low` (worth a glance; often a name to add to the glossary).
 
+### Checking several videos
+
+Drop several videos on the mascot, or a folder (the videos directly inside it, by name), or pick several with
+*Check a video...*: they're checked one after the other. Videos dropped while a check runs join the queue.
+In a batch only the last report opens (the others are in the reports folder), and a video that fails doesn't stop
+the rest. *Cancel check* stops the current video and goes on; *Clear queue* drops the ones still waiting.
+
 ### 3. Run the tests
 
 ```
@@ -152,7 +159,9 @@ repository, hence the limit. Tests that need client data, the Whisper model or r
 ### 4. Hide false alarms (the ignore list)
 
 A flag you've decided is fine can be hidden from then on. Every Word report ends with **Hide a flag next
-time**: one line per flag. Copy the line of a false alarm under `ignore:` in `ignore.yaml` (right-click the
+time**: one line per flag, and for an unknown word also the glossary line. If the word is a correct name or brand,
+**add it to the glossary** (right-click the mascot → *Edit glossary*, or `glossary:` in the client's file) rather
+than ignoring it: the spelling check then also catches misspellings of it. Otherwise copy the ignore line. Copy the line of a false alarm under `ignore:` in `ignore.yaml` (right-click the
 mascot → *Edit ignore list*):
 
 ```yaml

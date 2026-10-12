@@ -5,6 +5,7 @@
     runner.finished.connect(...)      # (issue count, report path)
     runner.failed.connect(...)        # (message for the user)
     runner.cancelled.connect(...)
+    runner.idle.connect(...)          # the thread is gone: the next check can start
     runner.start(video, client, options, reports_dir)
     runner.cancel()                   # stops at the next frame / batch
 
@@ -73,6 +74,7 @@ class CheckRunner(QObject):
     finished = Signal(int, str)
     failed = Signal(str)
     cancelled = Signal()
+    idle = Signal()                       # after finished/failed/cancelled, once start() works again
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
@@ -122,3 +124,4 @@ class CheckRunner(QObject):
             # process, so let it end first (a few milliseconds at most).
             thread.wait()
         del job, thread
+        self.idle.emit()
