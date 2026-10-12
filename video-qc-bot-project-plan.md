@@ -451,6 +451,7 @@ The report document, color checks, OCR, the ClickUp API and any UI are on hold u
 | 2. Spelling, capitalization, spacing | pyspellchecker + glossary.txt, forced spellings, rule-based checks from rules.yaml, client rules | **Done (2026-10-12)** |
 | 3. Punctuation via Anthropic API | Windowed prompts (Section 7.4), JSON-only output, confidence threshold, caching, batching, key from `ANTHROPIC_API_KEY` | **Done (2026-10-12)**, tested with a fake API only; first live run pending |
 | 4. Whisper transcript vs captions | faster-whisper (CPU, int8), cached transcripts, glossary as initial_prompt, alignment, wrong/missing/extra/early-word flags | **Done (2026-10-12)**, tested on a synthetic sample video; real-video run pending |
+| Report (Milestone 3) | Markdown report with screenshots, summary, appendix; CSV export | **Done (2026-10-12)**, Markdown + CSV; Word/PDF not built |
 
 ### Machines
 - Develop on Windows (Lenovo ThinkPad), run on a MacBook (specs to come). All code is cross-platform: pathlib everywhere,
@@ -582,7 +583,24 @@ The report document, color checks, OCR, the ClickUp API and any UI are on hold u
 - **Overlap with Phase 2:** a duplicated word is reported twice (text-only `repeated_word` and audio `extra_word`). Left as is
   for now; the report milestone can merge issues on the same caption.
 
+### Decisions made for the report (Milestone 3)
+- **Format: Markdown + CSV** (the plan's first step; no new dependency). Word (python-docx) or PDF can be added later
+  from the same data if Markdown isn't convenient to read.
+- **`--report` flag**; each run writes `reports/<video or srt name>_<YYYYmmdd-HHMMSS>/` and never overwrites an earlier one.
+- **Grouped per caption, not per issue:** one section, one screenshot, all problems for that caption, worst first. This
+  also resolves the Phase 4 overlap (doubled word reported by both `repeated_word` and `extra_word`).
+- **Screenshots** with `ffmpeg -ss <t> -i video -frames:v 1` (fast seek, argument list), 640 px wide JPEG, taken at the
+  **middle** of the caption by default (`screenshot_at: start` is the alternative) so burned-in text is fully visible. A
+  failed frame is noted in the report and never stops it.
+- **Header lists every check and why one was skipped** (no API key, `--no-llm`, no `--video`, off in config), so a quiet
+  report can't be mistaken for a clean video.
+- **CSV** in UTF-8 with a byte-order mark so Excel shows curly quotes correctly; raw caption text, not Markdown-escaped.
+- **Synthetic sample now has captions burned into the picture** (ffmpeg `subtitles` filter, run from the output folder so
+  Windows paths need no escaping; falls back to a plain picture if the filter is missing), so its screenshots show the
+  caption the issue is about, and it is ready as OCR test material later.
+
 ### Open questions
+- Is Markdown comfortable to read, or should the report also be a Word document or PDF?
 - Run on a real client video and its SRT (realistic voices, music, several speakers).
 - First live run of the punctuation check: confirm the cost and quality on a real caption file.
 - MacBook specs (sets `whisper_model_size` and `cpu_threads`).

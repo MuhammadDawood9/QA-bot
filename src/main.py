@@ -20,8 +20,10 @@ from src.config import check_settings, load_client, load_config, load_yaml, reso
 from src.inputs.srt_loader import SrtError, load_srt
 from src.audio.transcribe import get_transcript
 from src.models import Caption, Issue
+from src.report.builder import ReportInfo, build_report
 from src.utils.dictionary import load_word_list
 from src.utils.glossary import Glossary
+from src.utils.system import MissingToolError, find_ffmpeg
 from src.utils.timecode import format_timestamp
 
 
@@ -106,6 +108,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="skip the punctuation check (no Anthropic API calls, no cost)")
     parser.add_argument("--video", type=Path, default=None,
                         help="the video, to compare captions with what is said (Whisper; cached per video)")
+    parser.add_argument("--report", action="store_true",
+                        help="also write a report folder (report.md, screenshots, issues.csv) under reports/")
     return parser
 
 
@@ -135,6 +139,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.video, config.get("machine", {}), context.settings_for("transcript"),
                 context.glossary.all_terms(), resolve_path(config, "transcript_cache_dir"),
                 resolve_path(config, "models_dir"))
+            context.stats["transcript"] = {"model": config.get("machine", {}).get("whisper_model_size", "base")}
         except (OSError, RuntimeError) as exc:      # missing video, no ffmpeg, unreadable audio
             print(f"error: {exc}", file=sys.stderr)
             return 2
@@ -149,7 +154,58 @@ def main(argv: Sequence[str] | None = None) -> int:
     summary = format_llm_summary(context)
     if summary:
         print(summary, file=sys.stderr)   # stderr, so --json output stays clean
+
+    if args.report:
+        report = write_report(captions, issues, config, client, context, args)
+        print(f"report: {report}", file=sys.stderr)
     return 0
+
+
+def check_status_lines(context: CheckContext, args) -> list[str]:
+    """For the report header: which checks ran, and why any were skipped."""
+    names = {"too_short": "Too short / phrase break", "spelling": "Spelling and repeated words",
+             "capitalization": "Capitalization", "spacing": "Spacing",
+             "punctuation": "Punctuation (Anthropic API)", "transcript": "Captions vs audio (Whisper)"}
+    lines = []
+    for name in CHECKS:
+        settings = context.settings_for(name)
+        title = names.get(name, name)
+        if name == "punctuation":
+            stats = context.stats.get("punctuation", {})
+            if args.no_llm:
+                lines.append(f"{title}: skipped (--no-llm)")
+            elif not settings.get("enabled"):
+                lines.append(f"{title}: off in config")
+            elif stats.get("skipped"):
+                lines.append(f"{title}: skipped ({stats['skipped']})")
+            else:
+                lines.append(f"{title}: {settings.get('model')}, {stats.get('windows', 0)} captions "
+                             f"({stats.get('cached', 0)} from cache, {stats.get('failed', 0)} not reviewed)")
+        elif name == "transcript":
+            if context.transcript is None:
+                lines.append(f"{title}: not run (no --video)")
+            else:
+                model = context.stats.get("transcript", {}).get("model", "?")
+                lines.append(f"{title}: Whisper '{model}', {len(context.transcript)} words heard")
+        else:
+            lines.append(f"{title}: {'ran' if settings.get('enabled') else 'off in config'}")
+    return lines
+
+
+def write_report(captions, issues, config: dict, client: dict, context: CheckContext, args) -> Path:
+    settings = dict(config.get("report", {}))
+    settings["output_dir"] = Path(config["_root"]) / settings.get("output_dir", "reports")
+    ffmpeg = None
+    if args.video is not None and settings.get("include_screenshots", True):
+        try:
+            ffmpeg = find_ffmpeg(config.get("machine", {}).get("ffmpeg_path"))
+        except MissingToolError as exc:
+            warnings.warn(f"no screenshots in the report: {exc}", stacklevel=2)
+    rules_path = resolve_path(config, "rules_file")
+    rules_version = str(load_yaml(rules_path).get("version", "")) if rules_path.is_file() else None
+    info = ReportInfo(srt=args.srt, video=args.video, client=client.get("client"),
+                      rules_version=rules_version, checks=check_status_lines(context, args))
+    return build_report(captions, issues, info, settings, ffmpeg)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,8 @@ list of issues. See `video-qc-bot-project-plan.md` for the full plan and phase s
   question marks, apostrophes), with caching so reruns are free.
 - Phase 4: captions compared with what is actually said (faster-whisper on the CPU): wrong,
   missing and extra words, and captions that appear before the words are spoken.
+- Report: a Markdown document with a screenshot of every flagged caption, plus a CSV of
+  the issues for Excel or ClickUp (`--report`).
 
 ## Setup
 
@@ -104,6 +106,7 @@ python -m src.main --srt path/to/captions.srt --client E8D
   `config.yaml` are used and you get a warning.
 - `--json` prints the issues as JSON instead.
 - `--no-llm` skips the punctuation check: no API calls, no cost.
+- `--report` also writes a report folder (see "The report" below).
 - `--video path/to/video.mp4` also compares the captions with what is said in the video
   (see "Captions vs audio" below). The transcript is saved per video, so a second run on the
   same video starts checking immediately.
@@ -224,6 +227,26 @@ Where a full stop or comma goes depends on context, so this check asks Claude
 - Rough cost at current prices: about 1 to 2 US cents per 10 captions, so well under $1 for a
   30-minute video, and nothing on reruns. The CLI prints the real figure after each run.
 
+### The report
+
+```
+python -m src.main --srt captions.srt --video video.mp4 --client E3JB --report
+```
+
+Each run writes a new folder, `reports/<video name>_<date-time>/` (earlier reports are never overwritten):
+
+| File | What's in it |
+|---|---|
+| `report.md` | Header (video, captions, client, date, rules version, which checks ran or were skipped and why), a summary table of issues by type and severity, an index of flagged captions with links, one section per flagged caption (screenshot, caption text, every problem with what's wrong, suggested fix and confidence), and an appendix of all captions with the flagged ones in bold |
+| `screenshots/` | One frame per flagged caption, taken from the middle of the caption so burned-in text is fully on screen (needs `--video` and ffmpeg) |
+| `issues.csv` | One row per issue (time, caption, type, severity, problem, fix, confidence). Opens in Excel with accents and curly quotes intact; usable for a ClickUp import |
+
+Open `report.md` in VS Code (right-click, *Open Preview*) or any Markdown viewer to see the
+screenshots in place. Problems found by two checks on the same caption (for example a doubled
+word found by both the spelling check and the audio check) appear together in one section.
+Settings are under `report:` in `config.yaml` (output folder, screenshots on/off, frame position
+and width, CSV on/off).
+
 ### Captions vs audio (Whisper)
 
 ```
@@ -261,8 +284,9 @@ python scripts/make_sample_video.py
 python -m src.main --srt data/samples/synthetic_sample.srt --video data/samples/synthetic_sample.mp4 --no-llm
 python -m pytest --run-slow tests/test_sample_video.py
 ```
-The script uses the computer's own text-to-speech (Windows or macOS) to read a script, and writes a
-caption file with 6 planted mistakes from the real QC notes. `synthetic_sample_expected.json` lists them.
+The script uses the computer's own text-to-speech (Windows or macOS) to read a script, burns the
+captions into the picture, and writes a caption file with 6 planted mistakes from the real QC notes.
+`synthetic_sample_expected.json` lists them. Add `--report` to the second command to see a full report.
 
 ## Project layout
 
@@ -290,6 +314,8 @@ src/
   utils/glossary.py    glossary.txt loading
   utils/dictionary.py  pyspellchecker word list + glossary + extra_words.txt
   utils/text.py        word positions, edit distance, sentence breaks
+  report/builder.py    report.md and issues.csv
+  report/screenshots.py  frames from the video with ffmpeg
   utils/llm.py         Anthropic API client: request, refusals, token usage and cost
   utils/cache.py       JSON file cache keyed by text hash
   checks/transcript.py captions vs audio: alignment and the four issue types
@@ -297,6 +323,7 @@ src/
   utils/normalize.py   text normalization for comparing captions with speech
   utils/system.py      ffmpeg (argument lists, never a shell), file hashing
 cache/                 cached API answers and transcripts (git-ignored)
+reports/               generated reports (git-ignored)
 models/                Whisper models (git-ignored)
 tests/                 unit tests (the API and Whisper are faked); fixtures/sample_mistakes.srt (planted
                        mistakes), clean_sample.srt (none), punctuation_mistakes.srt.

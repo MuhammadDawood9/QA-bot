@@ -162,3 +162,11 @@ checks:
       "til": "until", "till": "until", "mr": "mister", "mrs": "missus", "dr": "doctor",
       "vs": "versus", "yall": "you all",
     }
+
+# The QC report (python -m src.main ... --report).
+report:
+  output_dir: reports                # one new folder per run: reports/<name>_<date-time>/
+  include_screenshots: true          # needs --video and ffmpeg
+  screenshot_at: middle              # middle or start of the caption; middle shows burned-in text fully
+  screenshot_width: 640              # pixels
+  write_csv: true                    # issues.csv for Excel or a ClickUp import

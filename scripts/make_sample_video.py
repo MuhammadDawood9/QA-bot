@@ -130,16 +130,24 @@ def main(argv=None) -> int:
             w.setframerate(SAMPLE_RATE)
             w.writeframes(bytes(frames))
 
-        mp4 = args.out / "synthetic_sample.mp4"
-        subprocess.run([ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-                        "-f", "lavfi", "-i", "color=c=black:s=640x360:r=25", "-i", str(wav),
-                        "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(mp4)],
-                       check=True)
+        srt = args.out / "synthetic_sample.srt"
+        with srt.open("w", encoding="utf-8", newline="\n") as f:
+            for cap_id, start, end, text in captions:
+                f.write(f"{cap_id}\n{srt_time(start)} --> {srt_time(end)}\n{text}\n\n")
 
-    srt = args.out / "synthetic_sample.srt"
-    with srt.open("w", encoding="utf-8", newline="\n") as f:
-        for cap_id, start, end, text in captions:
-            f.write(f"{cap_id}\n{srt_time(start)} --> {srt_time(end)}\n{text}\n\n")
+        # Burn the captions into the picture, as an edited video would have them. ffmpeg runs inside
+        # the output folder so the subtitles filter gets a bare file name (no drive letters or
+        # backslashes to escape on Windows).
+        mp4 = args.out / "synthetic_sample.mp4"
+        base = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", "color=c=0x202830:s=640x360:r=25", "-i", str(wav), "-shortest"]
+        encode = ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(mp4)]
+        burned = subprocess.run(base + ["-vf", f"subtitles={srt.name}:force_style='Fontsize=22'"] + encode,
+                                cwd=args.out, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if burned.returncode != 0:
+            print(f"note: could not burn captions into the picture ({burned.stderr.strip()[-200:]}); "
+                  "making the video without them", file=sys.stderr)
+            subprocess.run(base + encode, check=True)
     (args.out / "synthetic_sample_expected.json").write_text(
         json.dumps({"expected": expected, "clean_caption_ids": [c[0] for c in captions
                                                                  if c[0] not in {e["caption_id"] for e in expected}]},
