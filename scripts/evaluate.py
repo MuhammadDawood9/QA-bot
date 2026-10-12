@@ -1,26 +1,34 @@
-"""Measure how well the color checks match your own QC notes.
+"""Measure how well the bot's checks (captions and color) match your own QC notes.
 
     python scripts/evaluate.py --make-template          # draft data/ground_truth.csv from the QC spreadsheet
     python scripts/evaluate.py                          # evaluate (videos looked up in data/samples/)
     python scripts/evaluate.py --videos "D:/QC videos" --tolerance 2
+    python scripts/evaluate.py --checks captions        # only the caption checks (or: color)
 
 data/ground_truth.csv columns: video, timestamp, client, issue_type, note_text
   video       the video's file name (looked up under --videos, recursively) or a full path
   timestamp   as you wrote it: 00:00:19:59, 0:29, 24:37, 00;10;17;08, or a range 2:04-2:15.
               Leave it empty for a note about the whole video ("fix color grade").
   client      client code, for that client's settings (E3AC)
-  issue_type  one of the bot's color types (overexposed, underexposed, crushed_blacks, flat_contrast,
-              saturation, color_cast, skin_tone, shot_mismatch), or color_grading when the note
-              doesn't say which. A video with no notes at all can be listed with an empty timestamp
-              and issue_type "none": it then only counts toward false alarms.
+  issue_type  captions: spelling (also wrong, missing, extra or repeated words, names), punctuation
+              (also capitals and spacing), too_short (a lone word, a cut phrase, a bad line break),
+              timing (late, early, out of sync, speech with no caption), or caption when the note
+              doesn't say which.
+              color: overexposed, underexposed, crushed_blacks, flat_contrast, saturation,
+              color_cast, skin_tone, shot_mismatch, or color_grading when the note doesn't say which.
+              The bot's own type names (capitalization, wrong_word, caption_late...) work too.
+              A video with no notes at all can be listed with an empty timestamp and issue_type
+              "none": it then only counts toward false alarms.
   note_text   your comment, shown next to misses so you can look at each one
 
-Matching: a flag matches a note when the note's time (or range) falls inside the flagged shot,
-widened by --tolerance seconds on each side. A color_grading note is matched by a flag of any
-color type. Per check type:
+Matching: a flag matches a note when the note's time (or range) falls inside the flagged caption
+or shot, widened by --tolerance seconds on each side. Caption notes are matched only by caption
+flags and color notes only by color flags. A caption / color_grading note is matched by a flag
+of any type in its area. Per check type:
   recall      notes of that type that some flag of that type matched / notes of that type
-              (the "all color" row: every timed note, matched by a flag of any color type)
-  precision   flags of that type that match a note of that type or a color_grading note / all flags
+              (the "all captions" / "all color" rows: every timed note of the area, matched by
+              any flag of the area)
+  precision   flags of that type that match a note of that type or a generic note / all flags
   FP / min    flags that match no note, per minute of evaluated video
 Notes without a timestamp can't be matched to a moment; they're listed separately with whether
 the bot flagged anything at all in that video.
@@ -47,11 +55,38 @@ if str(ROOT) not in sys.path:
 
 from src.config import color_settings, load_client, load_config, normalize_client_code, ocr_settings, resolve_path  # noqa: E402
 from src.inputs.video_ocr import FULL_FRAME, parse_region  # noqa: E402
-from src.models import COLOR_ISSUES, Issue, shot_number  # noqa: E402
+from src.models import (CAPITALIZATION, CAPTION_EARLY, CAPTION_LATE, CAPTION_SYNC, COLOR_ISSUES, EXTRA_WORD,  # noqa: E402
+                        MISSING_WORD, PHRASE_BREAK, PUNCTUATION, REPEATED_WORD, SCREEN_TEXT_MISMATCH, SPACING,
+                        SPELLING, TOO_SHORT, UNCAPTIONED_SPEECH, WRONG_WORD, Issue, shot_number)
 from src.utils.timecode import TimecodeError, format_timestamp, infer_fps, parse_range  # noqa: E402
 
 GENERIC = {"color_grading", "color", "colour", "colour_grading", ""}
 ALL = "all color"
+# What a reviewer calls a caption mistake -> the bot's issue types that find it.
+CAPTION_FAMILIES = {
+    "spelling": {SPELLING, REPEATED_WORD, WRONG_WORD, MISSING_WORD, EXTRA_WORD, SCREEN_TEXT_MISMATCH},
+    "punctuation": {PUNCTUATION, CAPITALIZATION, SPACING},
+    "too_short": {TOO_SHORT, PHRASE_BREAK},
+    "timing": {CAPTION_EARLY, CAPTION_LATE, CAPTION_SYNC, UNCAPTIONED_SPEECH},
+}
+CAPTION_GENERIC = "caption"
+ALL_CAPTIONS = "all captions"
+ALIASES = {"too_short_caption": "too_short", "capitals": "punctuation", "capital": "punctuation",
+           "sync": "timing", "captions": "caption", "subtitle": "caption", "subtitles": "caption"}
+UNUSED_SPAN = 2.0          # seconds a flag with no caption (speech without one) covers after its time
+
+
+def family(kind: str) -> str:
+    """A caption issue type's family (wrong_word -> spelling); a color type stays itself."""
+    return next((name for name, types in CAPTION_FAMILIES.items() if kind in types), kind)
+
+
+def area(kind: str) -> str:
+    return "caption" if kind in CAPTION_FAMILIES or kind == CAPTION_GENERIC else "color"
+
+
+def generic(area_name: str) -> str:
+    return CAPTION_GENERIC if area_name == "caption" else "color_grading"
 COLUMNS = ["video", "timestamp", "client", "issue_type", "note_text"]
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mxf", ".m4v", ".mkv", ".avi"}
 
@@ -67,14 +102,26 @@ class Note:
     end: float | None = None
     matched_by: list[Issue] = field(default_factory=list)
 
+    @property
+    def area(self) -> str:
+        return area(self.kind)
+
 
 @dataclass
 class Flag:
     video: str
     issue: Issue
-    start: float                    # the flagged shot (or moment)
+    start: float                    # the flagged caption or shot (or moment)
     end: float
     matches: list[Note] = field(default_factory=list)
+
+    @property
+    def kind(self) -> str:
+        return family(self.issue.type)
+
+    @property
+    def area(self) -> str:
+        return area(self.kind)
 
 
 # --- reading the ground truth --------------------------------------------------------------
@@ -92,9 +139,9 @@ def read_truth(path: Path, fps: float) -> tuple[list[Note], list[str]]:
                 problems.append(f"line {n}: no video, skipped")
                 continue
             kind = (row.get("issue_type") or "").strip().lower()
-            kind = "color_grading" if kind in GENERIC else kind
-            if kind not in COLOR_ISSUES | {"color_grading", "none"}:
-                problems.append(f"line {n}: issue_type {kind!r} isn't a color type; counted as color_grading")
+            kind = "color_grading" if kind in GENERIC else family(ALIASES.get(kind, kind))
+            if kind not in COLOR_ISSUES | set(CAPTION_FAMILIES) | {"color_grading", CAPTION_GENERIC, "none"}:
+                problems.append(f"line {n}: issue_type {kind!r} isn't a type the bot checks; counted as color_grading")
                 kind = "color_grading"
             note = Note(video, (row.get("timestamp") or "").strip(), normalize_client_code(row.get("client")) or "",
                         kind, (row.get("note_text") or "").strip())
@@ -148,13 +195,40 @@ def color_flags(video: Path, client_code: str, config: dict) -> tuple[list[Flag]
     return flags, length, took
 
 
+def caption_flags(video: Path, client_code: str, config: dict) -> tuple[list[Flag], float, float]:
+    """The caption issues for one video (every caption check, the paid punctuation one off), as
+    flags spanning their caption; the video's length as far as the captions show, and the time."""
+    from src.engine import QCError, QCOptions, run_qc
+
+    started = time.monotonic()
+    try:
+        result = run_qc(video, client_code or None, options=QCOptions(use_llm=False, check_color=False),
+                        config=config)
+    except QCError as exc:
+        print(f"  {video.name}: captions not checked: {exc}")
+        return [], 0.0, 0.0
+    took = time.monotonic() - started
+    spans = {c.id: (c.start, c.end) for c in result.captions}
+    length = max([c.end for c in result.captions] + [i.timestamp for i in result.issues] + [0.0])
+    flags = []
+    for issue in result.issues:
+        if issue.type in COLOR_ISSUES:
+            continue
+        if issue.type == CAPTION_SYNC:
+            start, end = 0.0, length                      # one issue about the whole video
+        else:
+            start, end = spans.get(issue.caption_id, (issue.timestamp, issue.timestamp + UNUSED_SPAN))
+        flags.append(Flag(video.name, issue, start, end))
+    return flags, length, took
+
+
 # --- matching and scoring -------------------------------------------------------------------
 
 def match(notes: list[Note], flags: list[Flag], tolerance: float) -> None:
     for flag in flags:
         lo, hi = flag.start - tolerance, flag.end + tolerance
         for note in notes:
-            if note.start is None or note.kind == "none":
+            if note.start is None or note.kind == "none" or note.area != flag.area:
                 continue
             if note.end >= lo and note.start <= hi:              # overlap, ranges included
                 note.matched_by.append(flag.issue)
@@ -164,23 +238,27 @@ def match(notes: list[Note], flags: list[Flag], tolerance: float) -> None:
 def score(notes: list[Note], flags: list[Flag], minutes: float) -> list[dict]:
     rows = []
     timed = [n for n in notes if n.start is not None and n.kind != "none"]
-    for kind in sorted(COLOR_ISSUES) + [ALL]:
-        if kind == ALL:
-            relevant = timed
-            found = [n for n in relevant if n.matched_by]
-            mine = flags
-            true = [f for f in mine if f.matches]
-        else:
-            relevant = [n for n in timed if n.kind == kind]
-            found = [n for n in relevant if any(i.type == kind for i in n.matched_by)]
-            mine = [f for f in flags if f.issue.type == kind]
-            true = [f for f in mine if any(n.kind in (kind, "color_grading") for n in f.matches)]
-        rows.append({
-            "type": kind, "notes": len(relevant), "found": len(found), "flags": len(mine), "true": len(true),
-            "recall": len(found) / len(relevant) if relevant else None,
-            "precision": len(true) / len(mine) if mine else None,
-            "fp_per_min": (len(mine) - len(true)) / minutes if minutes else None,
-        })
+    for name, kinds, everything in (("caption", list(CAPTION_FAMILIES), ALL_CAPTIONS),
+                                    ("color", sorted(COLOR_ISSUES), ALL)):
+        area_notes = [n for n in timed if n.area == name]
+        area_flags = [f for f in flags if f.area == name]
+        for kind in kinds + [everything]:
+            if kind == everything:
+                relevant = area_notes
+                found = [n for n in relevant if n.matched_by]
+                mine = area_flags
+                true = [f for f in mine if f.matches]
+            else:
+                relevant = [n for n in area_notes if n.kind == kind]
+                found = [n for n in relevant if any(family(i.type) == kind for i in n.matched_by)]
+                mine = [f for f in area_flags if f.kind == kind]
+                true = [f for f in mine if any(n.kind in (kind, generic(name)) for n in f.matches)]
+            rows.append({
+                "type": kind, "area": name, "notes": len(relevant), "found": len(found), "flags": len(mine),
+                "true": len(true), "recall": len(found) / len(relevant) if relevant else None,
+                "precision": len(true) / len(mine) if mine else None,
+                "fp_per_min": (len(mine) - len(true)) / minutes if minutes else None,
+            })
     return rows
 
 
@@ -204,15 +282,16 @@ def write_outputs(folder: Path, rows: list[dict], notes: list[Note], flags: list
             w.writerow([n.video, n.stamp, f"{n.start:.2f}", n.client, n.kind, n.text])
     with (folder / "false_alarms.csv").open("w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["video", "timestamp", "seconds", "shot", "issue_type", "severity", "message"])
+        w.writerow(["video", "timestamp", "seconds", "caption or shot", "issue_type", "severity", "message"])
         for fl in false_alarms:
             w.writerow([fl.video, format_timestamp(fl.issue.timestamp), f"{fl.issue.timestamp:.2f}",
                         fl.issue.original, fl.issue.type, fl.issue.severity, fl.issue.message])
 
     total_min = sum(v["minutes"] for v in videos.values())
-    lines = [f"# Color check evaluation, {dt.datetime.now():%Y-%m-%d %H:%M}", "",
+    lines = [f"# Check evaluation, {dt.datetime.now():%Y-%m-%d %H:%M}", "",
              f"{len(videos)} video(s), {total_min:.1f} minutes; {sum(1 for n in notes if n.start is not None)} timed "
-             f"note(s), {len(untimed)} untimed; matching tolerance ±{tolerance:g} s around each flagged shot.", "",
+             f"note(s), {len(untimed)} untimed; matching tolerance ±{tolerance:g} s around each flagged caption or shot.",
+             "", "Caption flags come from every caption check except the paid punctuation one (no API calls).", "",
              "| Check | Notes | Found | Recall | Flags | True | Precision | False alarms / min |",
              "|---|---:|---:|---:|---:|---:|---:|---:|"]
     for r in rows:
@@ -230,10 +309,10 @@ def write_outputs(folder: Path, rows: list[dict], notes: list[Note], flags: list
     lines += [f"- **{f.video}** {format_timestamp(f.issue.timestamp)} {f.issue.original} [{f.issue.type}, "
               f"{f.issue.severity}] {f.issue.message}" for f in false_alarms] or ["- none"]
     other_type = [f for f in flags if f.matches
-                  and not any(n.kind in (f.issue.type, "color_grading") for n in f.matches)]
+                  and not any(n.kind in (f.kind, generic(f.area)) for n in f.matches)]
     lines += ["", f"## Right moment, different type ({len(other_type)})", "",
               "Flags on a noted moment whose note names another problem. They count as found for "
-              "\"all color\" but as false alarms in their own row.", ""]
+              "\"all captions\" / \"all color\" but as false alarms in their own row.", ""]
     lines += [f"- **{f.video}** {format_timestamp(f.issue.timestamp)} {f.issue.original} [{f.issue.type}] "
               f"vs note [{', '.join(sorted({n.kind for n in f.matches}))}]: {f.issue.message}"
               for f in other_type] or ["- none"]
@@ -241,7 +320,7 @@ def write_outputs(folder: Path, rows: list[dict], notes: list[Note], flags: list
         lines += ["", f"## Notes without a timestamp ({len(untimed)})", ""]
         for n in untimed:
             count = videos.get(n.video, {}).get("flags", 0)
-            lines.append(f"- **{n.video}** [{n.kind}] {n.text} (bot flagged {count} shot(s) in this video)")
+            lines.append(f"- **{n.video}** [{n.kind}] {n.text} (bot flagged {count} thing(s) in this video)")
     if problems:
         lines += ["", "## Ground truth problems", ""] + [f"- {p}" for p in problems]
     (folder / "evaluation.md").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
@@ -262,31 +341,80 @@ KEYWORDS = [
 ]
 
 
-def make_template(xlsx: Path, out: Path) -> int:
+# The spreadsheet's caption categories -> ground truth types. creative_direction and other are
+# requests the bot can't check (new text, animations), so they're left out.
+CAPTION_CATEGORIES = {"spelling": "spelling", "punctuation": "punctuation", "too_short_caption": "too_short"}
+
+
+def _sheet(book, prefix: str) -> tuple[dict, list]:
+    name = next((n for n in book.sheetnames if n.startswith(prefix)), None)
+    if name is None:
+        raise SystemExit(f"error: the spreadsheet has no sheet named {prefix}...")
+    rows = list(book[name].iter_rows(values_only=True))
+    header = [str(h) for h in rows[0]]
+    return {h: i for i, h in enumerate(header)}, rows[1:]
+
+
+def template_rows(xlsx: Path) -> tuple[list[list], int]:
+    """Ground truth rows from the spreadsheet (caption mistakes, then color notes), with the task
+    name where the video goes; and how many caption notes were left out as not checkable."""
     import openpyxl
 
+    book = openpyxl.load_workbook(xlsx, read_only=True)
+    out, skipped = [], 0
+    col, rows = _sheet(book, "Caption mistakes")
+    for r in rows:
+        kind = CAPTION_CATEGORIES.get(str(r[col["category"]] or ""))
+        if kind is None:
+            skipped += 1
+            continue
+        text = str(r[col["comment_text"]] or "").strip()
+        wrote, should = r[col["editor_wrote"]], r[col["should_be"]]
+        if wrote or should:
+            text += f" [editor wrote: {wrote or '?'}; should be: {should or '?'}]"
+        out.append([r[col["task_name"]], str(r[col["video_timestamp"]] or "").strip(), r[col["client"]] or "",
+                    kind, text])
+    col, rows = _sheet(book, "All QC notes")
+    for r in rows:
+        if r[col["category"]] != "color_grading":
+            continue
+        text = str(r[col["comment_text"]] or "").strip()
+        kind = next((k for k, pattern in KEYWORDS if re.search(pattern, text, re.I)), "color_grading")
+        out.append([r[col["task_name"]], str(r[col["video_timestamp"]] or "").strip(), r[col["client"]] or "",
+                    kind, text])
+    return out, skipped
+
+
+def make_template(xlsx: Path, out: Path) -> int:
     if out.exists():
         raise SystemExit(f"error: {out} already exists; move it away first so your edits aren't overwritten")
-    sheet = openpyxl.load_workbook(xlsx, read_only=True)["All QC notes (1531)"]
-    rows = list(sheet.iter_rows(values_only=True))
-    header = [str(h) for h in rows[0]]
-    col = {name: header.index(name) for name in ("task_name", "client", "video_timestamp", "category", "comment_text")}
-    written = 0
+    rows, skipped = template_rows(xlsx)
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
         w.writerow(COLUMNS)
-        for r in rows[1:]:
-            if r[col["category"]] != "color_grading":
-                continue
-            text = str(r[col["comment_text"]] or "").strip()
-            kind = next((k for k, pattern in KEYWORDS if re.search(pattern, text, re.I)), "color_grading")
-            stamp = str(r[col["video_timestamp"]] or "").strip()
+        for task, stamp, client, kind, text in rows:
             # The video column starts as the task name: replace it with the video's file name.
-            w.writerow([f"TODO {r[col['task_name']]}".strip(), stamp, r[col["client"]] or "", kind, text])
-            written += 1
-    print(f"wrote {out} with {written} color notes. Replace each 'TODO <task name>' with the video's file "
-          f"name, check the guessed issue_type, and delete rows for videos you don't have.")
+            w.writerow([f"TODO {task}".strip(), stamp, client, kind, text])
+
+    # Which videos to collect, the ones with the most checkable notes first.
+    tasks: dict[str, dict] = {}
+    for task, stamp, client, kind, _ in rows:
+        t = tasks.setdefault(task, {"client": client, "caption": 0, "color": 0, "timed": 0})
+        t[area(kind)] += 1
+        t["timed"] += bool(stamp)
+    needed = out.with_name(out.stem + "_videos.csv")
+    with needed.open("w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["task_name", "client", "caption_notes", "color_notes", "timed_notes", "video_file"])
+        for task, t in sorted(tasks.items(), key=lambda kv: (-kv[1]["timed"], kv[0])):
+            w.writerow([task, t["client"], t["caption"], t["color"], t["timed"], ""])
+    captions = sum(1 for r in rows if area(r[3]) == "caption")
+    print(f"wrote {out}: {captions} caption notes ({skipped} creative or other requests left out: the bot can't "
+          f"check them) and {len(rows) - captions} color notes, from {len(tasks)} videos.")
+    print(f"wrote {needed}: the videos to collect, most useful first.")
+    print("Replace each 'TODO <task name>' with the video's file name, check the guessed issue_type, and "
+          "delete rows for videos you don't have.")
     return 0
 
 
@@ -295,13 +423,16 @@ def make_template(xlsx: Path, out: Path) -> int:
 def main(argv=None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    parser = argparse.ArgumentParser(description="Evaluate the color checks against your QC notes.")
+    parser = argparse.ArgumentParser(description="Evaluate the caption and color checks against your QC notes.")
     parser.add_argument("--truth", type=Path, default=ROOT / "data" / "ground_truth.csv")
     parser.add_argument("--videos", type=Path, action="append",
                         help="folder to look for the videos in (repeatable; default data/samples and data)")
     parser.add_argument("--tolerance", type=float, default=2.0, help="seconds either side of a flagged shot")
+    parser.add_argument("--checks", choices=("all", "captions", "color"), default="all",
+                        help="which checks to evaluate (captions run speech recognition: slower)")
     parser.add_argument("--make-template", action="store_true",
-                        help="write a draft ground_truth.csv from the color notes in the QC spreadsheet")
+                        help="write a draft ground_truth.csv (and the list of videos to collect) from the QC "
+                             "spreadsheet")
     parser.add_argument("--xlsx", type=Path, default=ROOT / "data" / "QC_Review_Analysis_Jun-Oct_2026.xlsx")
     args = parser.parse_args(argv)
 
@@ -312,6 +443,10 @@ def main(argv=None) -> int:
 
     config = load_config()
     notes, problems = read_truth(args.truth, float(config.get("timecode", {}).get("fps", 30)))
+    wanted = {"all": {"caption", "color"}, "captions": {"caption"}, "color": {"color"}}[args.checks]
+    for n in notes:
+        if n.kind != "none" and n.area not in wanted:
+            n.kind = "none"                                         # not part of this run
     folders = args.videos or [ROOT / "data" / "samples", ROOT / "data"]
     by_video: dict[str, list[Note]] = defaultdict(list)
     for n in notes:
@@ -327,8 +462,14 @@ def main(argv=None) -> int:
                 n.kind = "none"                                     # not evaluated
             continue
         client = next((n.client for n in video_notes if n.client), "")
-        print(f"checking {path.name} (client {client or 'default'})...")
-        flags, length, took = color_flags(path, client, config)
+        areas = {n.area for n in video_notes if n.kind != "none"} or set(wanted)      # no notes: both count
+        print(f"checking {path.name} (client {client or 'default'}; {', '.join(sorted(areas))})...")
+        flags, length, took = [], 0.0, 0.0
+        for name, check in (("caption", caption_flags), ("color", color_flags)):
+            if name in areas & wanted:
+                found, seconds, spent = check(path, client, config)
+                flags += found
+                length, took = max(length, seconds), took + spent
         match(video_notes, flags, args.tolerance)
         all_flags += flags
         videos[name] = {"minutes": length / 60, "flags": len(flags), "notes": len(video_notes), "took": took}

@@ -77,6 +77,65 @@ def test_scores_per_type_and_overall():
     assert (overall["notes"], overall["found"], overall["flags"], overall["true"]) == (4, 3, 4, 3)
 
 
+def caption_flag(video, caption_id, kind, start, end):
+    issue = Issue(caption_id, start, kind, "medium", "text", "msg", "", 0.8)
+    return evaluate.Flag(video, issue, start, end)
+
+
+def test_caption_note_types_and_aliases(tmp_path):
+    notes, problems = evaluate.read_truth(truth(tmp_path, [
+        "a.mp4,0:07,E2CS,spelling,peaked up",
+        "a.mp4,0:08,E2CS,capitalization,the bot's own type name",
+        "a.mp4,0:14,E2CS,too_short_caption,the spreadsheet's category name",
+        "a.mp4,0:20,E2CS,caption_late,a bot timing type",
+        "a.mp4,0:30,E2CS,caption,any caption problem",
+    ]), fps=30)
+    assert [n.kind for n in notes] == ["spelling", "punctuation", "too_short", "timing", "caption"]
+    assert {n.area for n in notes} == {"caption"} and not problems
+
+
+def test_caption_notes_match_only_caption_flags():
+    notes = [evaluate.Note("a", "0:10", "", "spelling", "", 10, 10),
+             evaluate.Note("a", "0:10", "", "overexposed", "", 10, 10)]
+    flags = [caption_flag("a", 3, "wrong_word", 9.5, 11.0), flag("a", 1, "overexposed", 8, 12)]
+    evaluate.match(notes, flags, tolerance=0)
+    assert [i.type for i in notes[0].matched_by] == ["wrong_word"]            # not the color flag
+    assert [i.type for i in notes[1].matched_by] == ["overexposed"]
+
+
+def test_caption_scores_by_family():
+    notes = [evaluate.Note("a", "", "", "spelling", "", 10, 10), evaluate.Note("a", "", "", "punctuation", "", 20, 20),
+             evaluate.Note("a", "", "", "caption", "", 30, 30), evaluate.Note("a", "", "", "too_short", "", 40, 40)]
+    flags = [caption_flag("a", 1, "missing_word", 9, 11),                     # a spelling-family type
+             caption_flag("a", 2, "spelling", 19, 21),                        # right moment, other family
+             caption_flag("a", 3, "capitalization", 29, 31),                  # backed by the generic note
+             caption_flag("a", 4, "phrase_break", 60, 61)]                    # nothing there
+    evaluate.match(notes, flags, tolerance=0)
+    rows = {r["type"]: r for r in evaluate.score(notes, flags, minutes=1.0)}
+    assert rows["spelling"]["recall"] == 1.0 and rows["spelling"]["precision"] == 0.5
+    assert rows["punctuation"]["recall"] == 0.0 and rows["punctuation"]["precision"] == 1.0
+    assert rows["too_short"]["recall"] == 0.0 and rows["too_short"]["precision"] == 0.0
+    everything = rows[evaluate.ALL_CAPTIONS]
+    assert (everything["notes"], everything["found"], everything["flags"], everything["true"]) == (4, 3, 4, 3)
+    assert rows[evaluate.ALL]["notes"] == 0 and rows[evaluate.ALL]["flags"] == 0       # color untouched
+
+
+def test_template_has_caption_and_color_notes_and_a_video_list(tmp_path):
+    xlsx = ROOT / "data" / "QC_Review_Analysis_Jun-Oct_2026.xlsx"
+    if not xlsx.is_file():
+        pytest.skip("the QC spreadsheet is client data and isn't in the repository")
+    out = tmp_path / "ground_truth.csv"
+    evaluate.make_template(xlsx, out)
+    notes, problems = evaluate.read_truth(out, fps=30)
+    kinds = {n.kind for n in notes}
+    assert {"spelling", "punctuation", "too_short"} <= kinds and "color_grading" in kinds and not problems
+    videos = (tmp_path / "ground_truth_videos.csv").read_text(encoding="utf-8-sig").splitlines()
+    assert videos[0].startswith("task_name,client,caption_notes,color_notes,timed_notes")
+    assert len(videos) > 10
+    with pytest.raises(SystemExit, match="already exists"):
+        evaluate.make_template(xlsx, out)                                      # never overwrites your edits
+
+
 def test_videos_are_found_by_name_in_subfolders(tmp_path):
     (tmp_path / "E3AC" / "wedding").mkdir(parents=True)
     video = tmp_path / "E3AC" / "wedding" / "Elvia & Santizo – ceremonia.mp4"

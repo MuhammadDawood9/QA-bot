@@ -756,9 +756,20 @@ Windows 10/11 and macOS (Intel, also Apple Silicon); OS-specific code only in `s
   inside its shot ±2 s. Per type: recall, precision, false alarms per minute, and lists of misses, false alarms and
   "right moment, different type" flags. A `color_grading` note (no specific problem) is matched by any color flag.
 - **Not run on real videos yet:** the notes' videos aren't on this machine. Results so far are only the planted test video.
+- **Caption checks added (2026-10-13):** notes of type spelling / punctuation / too_short / timing / caption are
+  matched by caption flags only (the caption's span ±tolerance), grouped into families: spelling = spelling,
+  repeated, wrong, missing, extra word, screen-text names; punctuation = punctuation, capitalization, spacing;
+  too_short = too_short, phrase_break; timing = early, late, sync (whole video), uncaptioned speech. The bot's own
+  type names and the spreadsheet's categories work as issue_type. Caption flags come from `run_qc` with color and
+  the paid LLM check off. `--checks all|captions|color`. The template now adds the 45 checkable caption mistakes
+  (14 creative/other requests left out) and writes `ground_truth_videos.csv`: the 46 videos to collect, most timed
+  notes first (top: E3AC weddings for color; E3RK, E2CS, E8D for captions). Smoke-tested on del.mp4 (4 caption
+  flags, cached run 5 s). The spreadsheet has no caption-timing notes; timing can only be measured from notes added
+  by hand.
 
 ### Open questions
-- Fill `data/ground_truth.csv` and put the matching videos (mostly E3AC weddings) where the evaluation can find them.
+- Fill `data/ground_truth.csv` and put the matching videos (`data/ground_truth_videos.csv` lists them, most useful
+  first) where the evaluation can find them.
 - The desktop-app spec asks to detect Tesseract; the bot uses RapidOCR (pip, no separate install). Drop that
   requirement, or is Tesseract wanted for something else?
 - Is a PDF version also wanted? (Word can save the .docx as PDF in the meantime.)

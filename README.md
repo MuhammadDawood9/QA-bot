@@ -406,19 +406,27 @@ except Cancelled:
 `disabled_checks` (check names from `src/checks/__init__.py`, or `"color"`) and `config_path`. The engine never prints:
 messages go to the `qcbot` loggers.
 
-### Evaluating the color checks against your notes
+### Evaluating the checks against your notes
 
 ```
-python scripts/evaluate.py --make-template      # drafts data/ground_truth.csv from the spreadsheet's 166 color notes
+python scripts/evaluate.py --make-template      # drafts data/ground_truth.csv + data/ground_truth_videos.csv
 python scripts/evaluate.py                      # after filling it in; videos are looked up in data/samples/ and data/
 python scripts/evaluate.py --videos "D:/QC videos" --tolerance 2
+python scripts/evaluate.py --checks captions    # only the caption checks (or: color)
 ```
 
-In `data/ground_truth.csv`, replace each `TODO <task name>` with the video's file name, check the guessed `issue_type`
-(or use `color_grading` when the note doesn't say which problem), and delete notes that are creative ideas rather than
-mistakes. A flag matches a note when the note's time falls in the flagged shot ±2 s. The script prints recall, precision
-and false alarms per minute for each color check, and writes `reports/evaluation_<date-time>/` with `evaluation.md`,
-`misses.csv` and `false_alarms.csv` so you can look at each one. It doesn't change any threshold.
+The template takes the spreadsheet's caption mistakes (spelling, punctuation and capitals, too-short captions; the
+creative requests are left out because the bot can't check them) and its color notes. `ground_truth_videos.csv` lists
+the videos those notes are about, the ones with the most timed notes first: collect those, write each file name in its
+`video_file` column for your own reference, and put the files in `data/samples/` (or pass `--videos`).
+
+In `data/ground_truth.csv`, replace each `TODO <task name>` with the video's file name, check the guessed `issue_type`,
+and delete rows for videos you don't have. Caption types: `spelling`, `punctuation`, `too_short`, `timing`, or `caption`
+when the note doesn't say which; color types: the eight color checks, or `color_grading`. A flag matches a note when the
+note's time falls in the flagged caption or shot ±2 s; caption notes only match caption flags. The script prints recall,
+precision and false alarms per minute per check, and writes `reports/evaluation_<date-time>/` with `evaluation.md`,
+`misses.csv` and `false_alarms.csv` so you can look at each one. The paid punctuation check isn't used, and no threshold
+is changed.
 
 ### Captions vs audio (Whisper)
 
