@@ -1,19 +1,22 @@
 """The floating mascot: a sprite you can drag anywhere, with a glow drawn behind it.
 
 Two windows, both frameless, transparent and always on top:
-  MascotWindow  the sprite. Its window is masked to the sprite's own shape (plus the badge), so
-                that shape is the one hit region for hover, click, drag and drop. Outside it the
-                window doesn't exist: clicks go to whatever is underneath, the same on Windows
-                (where only fully transparent pixels would pass clicks through) and macOS (where
-                no pixel would).
-  GlowWindow    the halo, the progress ring and the drop highlight, a little larger than the
-                sprite and behind it. It ignores the mouse entirely, so the glow can never block
-                a click, and it is never clipped by the sprite's mask.
+  MascotWindow  the sprite. Its window is masked to the sprite's own shape (a circle for round
+                skins, plus the badge), so that shape is the one hit region for hover, click,
+                drag and drop. Outside it the window doesn't exist: clicks go to whatever is
+                underneath, the same on Windows (where only fully transparent pixels would pass
+                clicks through) and macOS (where no pixel would).
+  GlowWindow    the halo, the thin ring on the circle's border, the progress ring and the drop
+                highlight, a little larger than the sprite and behind it. It ignores the mouse
+                entirely, so the glow can never block a click, and it is never clipped by the
+                sprite's mask.
 
-Glow: a radial gradient whose opacity and radius are animated with QPropertyAnimation. Working:
-blue-violet, pulsing. Done: green, fading out. Error: red, steady. Idle: none. Only the glow
-window repaints during the pulse (about 60 times a second, a 176 px window), and nothing animates
-in any other state.
+Glow: a halo outside the circle's edge (color at the edge fading to nothing ~14 px out, over a
+faint dark shadow), pre-rendered once per color; frames only change its opacity and scale.
+Colors, strengths and timings come from the skin (skin.json "glow", defaults in
+assets.DEFAULT_GLOW). Idle: soft pink-violet, static. Working: blue-violet, breathing every
+1.4 s. Done: a brief bright green pulse, then back to idle over 3 s. Error: red, steady. Only
+the glow window repaints, and only while working or during the done pulse.
 
 Blinks: one QTimer. On hover the eyes close for 120 ms, then again every 3 s while the cursor
 stays. Optionally (setting "idle_blink") a random blink every 5-10 s. Skins with "eyes": "frames"
@@ -26,12 +29,12 @@ back onto a screen if that screen is gone.
 from __future__ import annotations
 
 import logging
+import math
 import random
 from pathlib import Path
 
-from PySide6.QtCore import (Property, QEasingCurve, QParallelAnimationGroup, QPoint, QPointF, QPropertyAnimation,
-                            QRect, QRectF, QSize, Qt, QTimer, Signal)
-from PySide6.QtGui import (QBitmap, QColor, QFont, QFontMetrics, QGuiApplication, QPainter, QPen,
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation, Signal
+from PySide6.QtGui import (QBitmap, QColor, QFont, QFontMetrics, QGuiApplication, QPainter, QPen, QPixmap,
                            QRadialGradient, QRegion)
 from PySide6.QtWidgets import QWidget
 
@@ -42,10 +45,12 @@ from src.platform import current as platform
 
 log = logging.getLogger("qcbot.app")
 
-SPRITE = 120                  # the sprite, logical pixels; Qt scales for high-DPI screens
-PAD = 28                      # transparent margin around it for the glow
-WINDOW = SPRITE + 2 * PAD     # 176
+SPRITE = 88                   # the sprite on screen, logical pixels; Qt scales for high-DPI screens
+ART = 120                     # the size skins are drawn at (eye positions in skin.json use it)
+PAD = 32                      # transparent margin around it, so the halo is never clipped
+WINDOW = SPRITE + 2 * PAD     # 152
 CENTER = WINDOW / 2
+EDGE = SPRITE / 2             # the badge circle's radius; the halo starts here
 EDGE_MARGIN = 24              # gap from the screen edge for the default position
 DRAG_THRESHOLD = 4            # pixels the mouse must move before a press counts as a drag
 
@@ -53,11 +58,10 @@ BLINK_MS = 120                # eyes closed
 HOVER_BLINK_EVERY_MS = 3000   # again while the cursor stays
 IDLE_BLINK_MS = (5000, 10000)  # random gap for the optional idle blink
 
-GLOW_COLORS = {"working": QColor(124, 108, 255), "done": QColor(46, 204, 113), "error": QColor(235, 64, 52)}
-PULSE_MS = 1800               # one breath of the working glow
-DONE_FADE_MS = 2500
-RING_RADIUS = SPRITE / 2 + 5
-BADGE_HEIGHT = 30
+SHADOW_OFFSET = 1.5           # the shadow sits a little lower than the halo
+RING_RADIUS = EDGE + 6        # the progress ring
+BADGE_HEIGHT = 24
+BADGE_FONT = 13
 
 
 def badge_text(count: int) -> str:
@@ -68,17 +72,58 @@ def badge_rect(count: int) -> QRect:
     """Where the issue-count badge goes: over the sprite's top-right corner, inside the window."""
     font = QFont()
     font.setBold(True)
-    font.setPixelSize(15)
-    width = max(30, QFontMetrics(font).horizontalAdvance(badge_text(count)) + 14)
-    return QRect(PAD + SPRITE - width + 8, PAD - 6, width, BADGE_HEIGHT)
+    font.setPixelSize(BADGE_FONT)
+    width = max(BADGE_HEIGHT, QFontMetrics(font).horizontalAdvance(badge_text(count)) + 12)
+    return QRect(PAD + SPRITE - width + 6, PAD - 5, width, BADGE_HEIGHT)
 
 
 # --- the glow --------------------------------------------------------------------------------
 
-class GlowWindow(QWidget):
-    """The halo, progress ring and drop highlight behind the sprite. Never takes the mouse."""
+def _smooth(x: float) -> float:
+    x = min(1.0, max(0.0, x))
+    return x * x * (3 - 2 * x)
 
-    def __init__(self):
+
+def glow_layers(state: str, t: float, glow: dict) -> list[tuple[str, float, float, float]]:
+    """What the glow shows for a state at animation time t (0-1): a list of
+    (color of state, halo opacity, halo scale, ring weight). Colors and timings come from the
+    skin's glow settings (assets.DEFAULT_GLOW).
+
+    working  t runs 0-1 once per period; the halo breathes (1 - cos) between its low and high
+             strength and scale, easing in and out.
+    done     t runs 0-1 over return_ms: a bright pulse for flash_ms, a moment of steady green,
+             then a crossfade to the idle glow, which stays when t reaches 1.
+    """
+    if state == "working":
+        w = glow["working"]
+        breath = (1 - math.cos(2 * math.pi * t)) / 2
+        (lo, hi), (s0, s1) = w["strength"], w["scale"]
+        return [("working", lo + (hi - lo) * breath, s0 + (s1 - s0) * breath, 1.0)]
+    if state == "done":
+        d, idle = glow["done"], glow["idle"]["strength"]
+        flash = min(0.9, d["flash_ms"] / max(1, d["return_ms"]))
+        if t < flash:
+            p = math.sin(math.pi * t / flash)
+            return [("done", d["strength"] + (1 - d["strength"]) * p, 1 + 0.06 * p, 1.0)]
+        hold = flash + (1 - flash) * 0.35
+        f = _smooth((t - hold) / (1 - hold))
+        if f <= 0:
+            return [("done", d["strength"], 1.0, 1.0)]
+        if f >= 1:
+            return [("idle", idle, 1.0, 1.0)]
+        return [("done", d["strength"] * (1 - f), 1.0, 1 - f), ("idle", idle * f, 1.0, f)]
+    return [(state, glow[state]["strength"], 1.0, 1.0)]
+
+
+class GlowWindow(QWidget):
+    """The halo, the thin ring, the progress ring and the drop highlight behind the sprite.
+    Never takes the mouse.
+
+    Each halo color is rendered once into a QPixmap (at the screen's pixel ratio); a frame only
+    draws that pixmap with an opacity and a scale. One QVariantAnimation drives the working pulse
+    and the done pulse; it is stopped in every other state, so idle and error never repaint."""
+
+    def __init__(self, skin: Skin):
         flags = (platform.floating_window_flags() | Qt.WindowType.WindowTransparentForInput
                  | Qt.WindowType.WindowDoesNotAcceptFocus)
         super().__init__(None, flags)
@@ -87,87 +132,122 @@ class GlowWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setFixedSize(WINDOW, WINDOW)
-        self._opacity = 0.0
-        self._radius = 80.0
-        self.color = QColor(GLOW_COLORS["working"])
         self.mode = "idle"
+        self.t = 0.0
         self.progress: float | None = None
         self.drop_hover = False
-        self.animation = None                           # the running QPropertyAnimation / group, if any
+        self._halos: dict[tuple[str, float], QPixmap] = {}
+        self.animation = QVariantAnimation(self)          # the one animation: working pulse, done pulse
+        self.animation.setStartValue(0.0)
+        self.animation.setEndValue(1.0)
+        self.animation.valueChanged.connect(self._tick)
+        self.set_skin(skin)
 
-    # Animated properties (QPropertyAnimation drives them by name).
-    def _get_opacity(self) -> float:
-        return self._opacity
-
-    def _set_opacity(self, value: float) -> None:
-        self._opacity = float(value)
+    def set_skin(self, skin: Skin) -> None:
+        self.glow = skin.glow
+        self.ring = skin.shape == "circle"
+        self._halos.clear()
         self.update()
-
-    def _get_radius(self) -> float:
-        return self._radius
-
-    def _set_radius(self, value: float) -> None:
-        self._radius = float(value)
-        self.update()
-
-    glowOpacity = Property(float, _get_opacity, _set_opacity)
-    glowRadius = Property(float, _get_radius, _set_radius)
 
     def set_mode(self, state: str) -> None:
-        """working: pulse, done: fade out, error: steady, idle: off."""
-        if self.animation is not None:
-            self.animation.stop()
-            self.animation = None
-        self.mode = state
-        if state in GLOW_COLORS:
-            self.color = QColor(GLOW_COLORS[state])
+        """working: pulse, done: a pulse then back to idle, idle and error: steady."""
+        self.animation.stop()
+        self.mode, self.t = state, 0.0
         if state == "working":
-            group = QParallelAnimationGroup(self)
-            for prop, low, high in ((b"glowOpacity", 0.35, 0.85), (b"glowRadius", 70.0, CENTER - 2)):
-                anim = QPropertyAnimation(self, prop, group)
-                anim.setDuration(PULSE_MS)
-                anim.setKeyValueAt(0.0, low)
-                anim.setKeyValueAt(0.5, high)
-                anim.setKeyValueAt(1.0, low)
-                anim.setEasingCurve(QEasingCurve.Type.InOutSine)
-                group.addAnimation(anim)
-            group.setLoopCount(-1)
-            self.animation = group
-            group.start()
+            self.animation.setDuration(int(self.glow["working"]["period_ms"]) or 1400)
+            self.animation.setLoopCount(-1)
+            self.animation.start()
         elif state == "done":
-            self._radius = CENTER - 4
-            fade = QPropertyAnimation(self, b"glowOpacity", self)
-            fade.setDuration(DONE_FADE_MS)
-            fade.setStartValue(0.9)
-            fade.setEndValue(0.0)
-            fade.setEasingCurve(QEasingCurve.Type.OutCubic)
-            self.animation = fade
-            fade.start()
-        elif state == "error":
-            self._opacity, self._radius = 0.75, CENTER - 6
-        else:
-            self._opacity = 0.0
+            self.animation.setDuration(int(self.glow["done"]["return_ms"]) or 3000)
+            self.animation.setLoopCount(1)
+            self.animation.start()
+        self.update()
+
+    def _tick(self, value) -> None:
+        self.t = float(value)
         self.update()
 
     @property
     def animating(self) -> bool:
-        return self.animation is not None and self.animation.state() == QPropertyAnimation.State.Running
+        return self.animation.state() == QVariantAnimation.State.Running
+
+    def layers(self) -> list[tuple[str, float, float, float]]:
+        t = 1.0 if self.mode == "done" and not self.animating else self.t
+        return glow_layers(self.mode, t, self.glow)
+
+    def color(self, state: str) -> QColor:
+        return QColor(self.glow[state]["color"])
+
+    # --- drawing -------------------------------------------------------------------------
+
+    def _limits(self) -> tuple[float, float]:
+        """The halo's width and largest scale, kept inside the window whatever skin.json says."""
+        room = CENTER - EDGE - SHADOW_OFFSET - 3
+        width = min(float(self.glow["width"]), room)
+        return width, min(float(self.glow["working"]["scale"][1]) + 0.06, (CENTER - 1) / (EDGE + width + 3))
+
+    def halo(self, state: str, dpr: float) -> QPixmap:
+        """The halo of one color at strength 1, rendered once per color and pixel ratio: a faint
+        dark shadow, then the color from edge_opacity at the circle edge to nothing `width` beyond."""
+        key = (state, dpr)
+        if key not in self._halos:
+            width, _ = self._limits()
+            outer = EDGE + width
+            pixmap = QPixmap(round(WINDOW * dpr), round(WINDOW * dpr))
+            pixmap.setDevicePixelRatio(dpr)
+            pixmap.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(Qt.PenStyle.NoPen)
+            shadow = QRadialGradient(QPointF(CENTER, CENTER + SHADOW_OFFSET), outer + 3)
+            dark = float(self.glow["shadow_opacity"])
+            for stop, alpha in ((0.0, dark), (EDGE / (outer + 3), dark), (1.0, 0.0)):
+                shadow.setColorAt(stop, QColor(0, 0, 0, round(255 * alpha)))
+            painter.setBrush(shadow)
+            painter.drawEllipse(QPointF(CENTER, CENTER + SHADOW_OFFSET), outer + 3, outer + 3)
+            gradient = QRadialGradient(QPointF(CENTER, CENTER), outer)
+            edge = float(self.glow["edge_opacity"])
+            inner = EDGE / outer
+            for stop, alpha in ((0.0, edge), (inner, edge), (inner + (1 - inner) * 0.35, edge * 0.5),
+                                (inner + (1 - inner) * 0.7, edge * 0.15), (1.0, 0.0)):
+                color = self.color(state)
+                color.setAlphaF(alpha)
+                gradient.setColorAt(stop, color)
+            painter.setBrush(gradient)
+            painter.drawEllipse(QPointF(CENTER, CENTER), outer, outer)
+            painter.end()
+            self._halos[key] = pixmap
+        return self._halos[key]
 
     def paintEvent(self, event) -> None:
-        if self._opacity <= 0.01 and self.progress is None and not self.drop_hover:
-            return                                      # nothing to draw: the window stays fully transparent
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        center = QPointF(CENTER, CENTER)
-        if self._opacity > 0.01:
-            gradient = QRadialGradient(center, self._radius)
-            for stop, alpha in ((0.0, 0.95), (0.55, 0.75), (0.8, 0.3), (1.0, 0.0)):
-                color = QColor(self.color)
-                color.setAlphaF(max(0.0, min(1.0, alpha * self._opacity)))
-                gradient.setColorAt(stop, color)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(gradient)
-            painter.drawEllipse(center, self._radius, self._radius)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        dpr = self.devicePixelRatioF()
+        _, max_scale = self._limits()
+        layers = self.layers()
+        for state, opacity, scale, _ in layers:
+            if opacity <= 0.005:
+                continue
+            painter.save()
+            painter.setOpacity(min(1.0, opacity))
+            scale = min(scale, max_scale)
+            painter.translate(CENTER, CENTER)
+            painter.scale(scale, scale)
+            painter.translate(-CENTER, -CENTER)
+            painter.drawPixmap(0, 0, self.halo(state, dpr))
+            painter.restore()
+        if self.ring:                                   # the thin bright border, always at full strength
+            ring_width = float(self.glow["ring_width"])
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            for state, _, _, weight in layers:
+                if weight <= 0.005:
+                    continue
+                painter.setOpacity(weight)
+                painter.setPen(QPen(self.color(state).lighter(135), ring_width))
+                r = EDGE + ring_width / 2 - 1               # tucked one pixel under the image's edge
+                painter.drawEllipse(QPointF(CENTER, CENTER), r, r)
+            painter.setOpacity(1.0)
         if self.progress is not None:
             rect = QRectF(CENTER - RING_RADIUS, CENTER - RING_RADIUS, 2 * RING_RADIUS, 2 * RING_RADIUS)
             painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -178,7 +258,7 @@ class GlowWindow(QWidget):
         if self.drop_hover:
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(QPen(QColor("#2E7DF6"), 4, Qt.PenStyle.DashLine))
-            painter.drawEllipse(center, CENTER - 6, CENTER - 6)
+            painter.drawEllipse(QPointF(CENTER, CENTER), CENTER - 6, CENTER - 6)
         painter.end()
 
 
@@ -194,7 +274,7 @@ class MascotWindow(QWidget):
         super().__init__(None, platform.floating_window_flags())
         self.settings = settings
         self.skin = skin if skin is not None else load_skin(settings.get("skin"))
-        self.glow = GlowWindow()
+        self.glow = GlowWindow(self.skin)
         self.state = "idle"
         self.count: int | None = None
         self.progress: float | None = None
@@ -250,6 +330,7 @@ class MascotWindow(QWidget):
     def set_skin(self, key: str) -> None:
         self.skin = load_skin(key)
         self.settings.set("skin", self.skin.key)
+        self.glow.set_skin(self.skin)
         self.eyes_closed = False
         self._update_shape()
         self.update()
@@ -263,7 +344,10 @@ class MascotWindow(QWidget):
     # --- the hit region --------------------------------------------------------------------
 
     def sprite_region(self) -> QRegion:
-        """The sprite's shape in window coordinates: pixels at least half opaque."""
+        """The sprite's shape in window coordinates: the circle for round skins (one pixel wider,
+        so its antialiased edge isn't cut), else the pixels at least half opaque."""
+        if self.skin.shape == "circle":
+            return QRegion(QRect(PAD - 1, PAD - 1, SPRITE + 2, SPRITE + 2), QRegion.RegionType.Ellipse)
         icon = self.skin.icons.get(self.state)
         if icon is None or icon.isNull():
             return QRegion(QRect(PAD + 8, PAD + 8, SPRITE - 16, SPRITE - 16), QRegion.RegionType.Ellipse)
@@ -276,6 +360,9 @@ class MascotWindow(QWidget):
         return self._region
 
     def hit(self, point: QPoint) -> bool:
+        if self.skin.shape == "circle":
+            on_badge = self.state == "done" and self.count is not None and badge_rect(self.count).contains(point)
+            return on_badge or math.hypot(point.x() - CENTER, point.y() - CENTER) <= EDGE
         return self._region.contains(point)
 
     def _update_shape(self) -> None:
@@ -395,11 +482,12 @@ class MascotWindow(QWidget):
 
     def _paint_eyes(self, painter: QPainter) -> None:
         shape = self.skin.eye_shape
-        r = float(shape["radius"])
+        k = SPRITE / ART                              # skin.json positions are in the 120 px art
+        r = float(shape["radius"]) * k
         color = QColor(shape["color"])
         style = "closed" if self.eyes_closed else self.skin.state_eyes.get(self.state, "open")
         for x, y in (shape["left"], shape["right"]):
-            c = QPointF(PAD + x, PAD + y)
+            c = QPointF(PAD + x * k, PAD + y * k)
             if style == "open":
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(color)
@@ -410,18 +498,18 @@ class MascotWindow(QWidget):
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(color)
                 painter.drawEllipse(c + QPointF(0, r * 0.3), r, r * 0.85)
-                painter.setPen(QPen(color, max(2.0, r * 0.45), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                painter.setPen(QPen(color, max(1.5, r * 0.45), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
                 painter.drawLine(c + QPointF(-r * 1.3, -r * 0.7), c + QPointF(r * 1.3, -r * 0.7))
             elif style == "happy":
-                painter.setPen(QPen(color, max(2.0, r * 0.55), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                painter.setPen(QPen(color, max(1.5, r * 0.55), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawArc(QRectF(c.x() - r * 1.3, c.y() - r * 0.6, r * 2.6, r * 2.2), 30 * 16, 120 * 16)
             elif style == "cross":
-                painter.setPen(QPen(color, max(2.0, r * 0.55), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                painter.setPen(QPen(color, max(1.5, r * 0.55), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
                 painter.drawLine(c + QPointF(-r, -r), c + QPointF(r, r))
                 painter.drawLine(c + QPointF(-r, r), c + QPointF(r, -r))
             else:                                    # closed, for a blink
-                painter.setPen(QPen(color, max(2.0, r * 0.55), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                painter.setPen(QPen(color, max(1.5, r * 0.55), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
                 painter.drawLine(c + QPointF(-r * 1.1, 0), c + QPointF(r * 1.1, 0))
 
     def _paint_fallback(self, painter: QPainter) -> None:
@@ -436,12 +524,12 @@ class MascotWindow(QWidget):
     def _paint_badge(self, painter: QPainter, count: int) -> None:
         font = QFont(painter.font())
         font.setBold(True)
-        font.setPixelSize(15)
+        font.setPixelSize(BADGE_FONT)
         painter.setFont(font)
         rect = badge_rect(count)
         painter.setBrush(QColor("#E53935"))
         painter.setPen(QPen(QColor("white"), 2.5))
-        painter.drawRoundedRect(QRectF(rect).adjusted(1.5, 1.5, -1.5, -1.5), 13.5, 13.5)
+        painter.drawRoundedRect(QRectF(rect).adjusted(1.5, 1.5, -1.5, -1.5), BADGE_HEIGHT / 2 - 1.5, BADGE_HEIGHT / 2 - 1.5)
         painter.setPen(QColor("white"))
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, badge_text(count))
 

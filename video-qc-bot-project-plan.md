@@ -720,6 +720,20 @@ Windows 10/11 and macOS (Intel, also Apple Silicon); OS-specific code only in `s
 - `--selftest` and `--check VIDEO` let a build be verified without clicking through it.
 - **Not done:** code signing (Windows certificate, Apple Developer ID and notarization), so first runs show SmartScreen
   and Gatekeeper warnings (steps in `packaging/README.md`); an installer program; a native Apple Silicon build.
+- **Round avatar skin and halo glow (2026-10-13):** new default skin `avatar` from the user's art
+  (`mascot/*.png`, 1254 px) via `scripts/add_avatar_skin.py`: finds each image's opaque disc (it was off-center
+  with a ragged fringe), aligns the closed-eyes drawing to the open one (they're separate drawings: difference
+  36.8 → 15.6), makes the disc fully opaque (the art had alpha 253) and saves 120/240 px frames.
+  `skin.json` `"shape": "circle"`: images masked to the inscribed circle at load (antialiased textured-brush
+  ellipse; files untouched), window mask = the circle, hit test = distance from the center, so only the circle
+  (and the badge) takes hover, click, drag and drop. Glow rebuilt: a halo outside the circle edge (85% at the
+  edge, gone 14 px beyond), a faint dark shadow under it (reads on white) and a 2 px brighter ring on the border
+  at full strength. Each color pre-rendered once per pixel ratio into a QPixmap; frames only set opacity and
+  scale. One QVariantAnimation: working breath (1 - cos, 1.4 s, looping), done pulse (450 ms flash, back to the
+  idle glow by 3 s); stopped otherwise. Colors/strengths/timings in `skin.json` `"glow"` (defaults:
+  `assets.DEFAULT_GLOW`, each value validated). Idle now has a soft pink-violet glow (was none). **Mascot shrunk
+  to 88 px** (was 120; skins still drawn at 120, drawn eyes scaled), PAD 32, window 152. Measured on Windows:
+  idle/error/done-settled 0 repaints, working ~36 glow repaints/s, under 1% of one core. **macOS untested.**
 - **Mascot skins, glow and blinks (2026-10-12):** skins are folders `assets/mascot/<skin>/` with a `skin.json`
   (`eyes`: `frames` with `<state>_blink.png`, or `drawn` with eye positions, size, colors and a style per state);
   placeholders: inspector (frames), cloud (drawn), robot (the first art, frames). Chosen in the menu, remembered.

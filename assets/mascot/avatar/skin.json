@@ -1,0 +1,37 @@
+{
+  "name": "Avatar",
+  "eyes": "frames",
+  "shape": "circle",
+  "glow": {
+    "width": 14,
+    "edge_opacity": 0.85,
+    "ring_width": 2,
+    "shadow_opacity": 0.22,
+    "idle": {
+      "color": "#C08CF0",
+      "strength": 0.4
+    },
+    "working": {
+      "color": "#7C6CFF",
+      "strength": [
+        0.45,
+        1.0
+      ],
+      "scale": [
+        1.0,
+        1.1
+      ],
+      "period_ms": 1400
+    },
+    "done": {
+      "color": "#2ECC71",
+      "strength": 0.9,
+      "flash_ms": 450,
+      "return_ms": 3000
+    },
+    "error": {
+      "color": "#EB4034",
+      "strength": 0.9
+    }
+  }
+}

@@ -31,7 +31,7 @@ DEFAULTS: dict = {
     "notifications": True,                  # desktop notification when a check finishes or fails
     "last_report": None,
     "last_folder": None,                    # where the file picker opens
-    "skin": "inspector",                    # assets/mascot/<skin>/
+    "skin": "avatar",                       # assets/mascot/<skin>/
     "idle_blink": False,                    # a random blink every 5-10 s, besides the blink on hover
 }
 

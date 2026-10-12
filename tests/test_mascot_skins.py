@@ -10,14 +10,14 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest  # noqa: E402
-from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt, QUrl  # noqa: E402
+from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, QSize, Qt, QUrl  # noqa: E402
 from PySide6.QtGui import QDropEvent, QEnterEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from src.app import assets  # noqa: E402
 from src.app import mascot as mascot_module  # noqa: E402
 from src.app.main import CompanionApp, make_application  # noqa: E402
-from src.app.mascot import PAD, SPRITE, WINDOW, MascotWindow, badge_rect  # noqa: E402
+from src.app.mascot import EDGE, PAD, SPRITE, WINDOW, MascotWindow, badge_rect, glow_layers  # noqa: E402
 from src.app.settings import Settings  # noqa: E402
 
 CENTER = QPoint(WINDOW // 2, WINDOW // 2)
@@ -50,9 +50,9 @@ def leave(widget):
 
 # --- skins -----------------------------------------------------------------------------------
 
-def test_the_three_placeholder_skins(app):
+def test_the_skins(app):
     skins = assets.available_skins()
-    assert skins[0] == "inspector" and {"inspector", "cloud", "robot"} <= set(skins)
+    assert skins[0] == "avatar" and {"inspector", "cloud", "robot"} <= set(skins)
     inspector, cloud = assets.load_skin("inspector"), assets.load_skin("cloud")
     assert inspector.eyes == "frames" and set(inspector.blink_icons) == set(assets.STATES)
     assert cloud.eyes == "drawn" and cloud.blink_icons == {} and cloud.eye_shape["left"] == [46, 64]
@@ -73,7 +73,7 @@ def test_skin_json_values_are_checked(tmp_path):
 
 
 def test_missing_or_broken_skin_falls_back(app, tmp_path):
-    assert assets.load_skin("no-such-skin").key == "inspector"
+    assert assets.load_skin("no-such-skin").key == "avatar"
     (tmp_path / "broken").mkdir()
     (tmp_path / "broken" / "skin.json").write_text("{nope", encoding="utf-8")
     skin = assets.load_skin("broken", base=tmp_path)
@@ -92,7 +92,7 @@ def test_a_frames_skin_without_a_blink_frame_doesnt_blink_in_that_state(app, tmp
 
 def test_switching_skins_is_remembered(app, settings):
     m = MascotWindow(settings)
-    assert m.skin.key == "inspector"
+    assert m.skin.key == "avatar"
     m.set_skin("cloud")
     assert m.skin.key == "cloud" and Settings(settings.path).get("skin") == "cloud"
     assert MascotWindow(Settings(settings.path)).skin.key == "cloud"
@@ -103,7 +103,7 @@ def test_skin_menu_lists_the_skins(app, settings, monkeypatch):
     menu = c.build_menu()
     skin_menu = next(a.menu() for a in menu.actions() if a.text() == "Skin")
     labels = [a.text() for a in skin_menu.actions() if a.text()]
-    assert labels[:3] == ["Inspector", "Cloud", "Robot"] and "Blink while idle" in labels
+    assert labels[:4] == ["Avatar", "Cloud", "Inspector", "Robot"] and "Blink while idle" in labels
     next(a for a in skin_menu.actions() if a.text() == "Cloud").trigger()
     assert c.mascot.skin.key == "cloud"
     c.mascot.close()
@@ -133,9 +133,9 @@ def test_hit_region_is_the_sprite_shape(app, settings):
 
 def test_hit_region_follows_the_skin_and_the_badge(app, settings):
     m = MascotWindow(settings)
-    inspector = m.hit_region()
+    avatar = m.hit_region()
     m.set_skin("cloud")
-    assert m.hit_region() != inspector
+    assert m.hit_region() != avatar
     rect = badge_rect(12)
     corner = QPoint(rect.right() - 2, rect.top() + 2)
     assert not m.hit(corner)
@@ -165,33 +165,130 @@ def test_drops_count_only_on_the_sprite(app, settings, tmp_path):
 
 # --- glow ------------------------------------------------------------------------------------
 
-def test_glow_per_state(app, settings, monkeypatch):
-    monkeypatch.setattr(mascot_module, "DONE_FADE_MS", 200)
+def test_avatar_skin_is_a_circle_with_its_glow_in_skin_json(app):
+    skin = assets.load_skin("avatar")
+    meta = json.loads((assets.mascot_dir() / "avatar" / "skin.json").read_text(encoding="utf-8"))
+    assert skin.shape == "circle" and skin.eyes == "frames" and set(skin.blink_icons) == set(assets.STATES)
+    assert meta["glow"]["working"]["period_ms"] == 1400 and meta["glow"]["done"]["return_ms"] == 3000
+    for state in assets.STATES:
+        assert skin.glow[state]["color"] == meta["glow"][state]["color"]
+
+
+def test_avatar_image_is_masked_to_a_circle_when_loaded(app):
+    skin = assets.load_skin("avatar")
+    for size in (120, 240):
+        image = skin.icons["idle"].pixmap(QSize(size, size), 1.0).toImage()
+        assert image.width() == size
+        for x, y in ((1, 1), (size - 2, 1), (1, size - 2), (size - 2, size - 2)):
+            assert image.pixelColor(x, y).alpha() == 0                          # the square's corners are gone
+        assert image.pixelColor(size // 2, size // 2).alpha() == 255
+        assert image.pixelColor(size // 2, 2).alpha() > 200                    # the circle reaches the edge
+    raw = assets.load_icon(assets.mascot_dir() / "avatar" / "idle.png").pixmap(QSize(120, 120), 1.0).toImage()
+    assert raw.pixelColor(1, 1).alpha() > 0                                     # the file itself is untouched
+
+
+def test_circle_hit_area_is_only_the_circle(app, settings):
+    m = MascotWindow(settings)                                                  # avatar: a circle
+    c = WINDOW / 2
+    assert m.hit(QPoint(round(c + EDGE - 3), round(c))) and m.hit(QPoint(round(c), round(c - EDGE + 3)))
+    assert not m.hit(QPoint(round(c + EDGE + 4), round(c)))                     # the halo: not the mascot
+    assert not m.hit(QPoint(round(c + 0.72 * EDGE), round(c + 0.72 * EDGE)))   # outside, toward a corner
+    rect = badge_rect(5)
+    m.set_state("done", 5)
+    assert m.hit(QPoint(rect.right() - 2, rect.top() + 2))                     # the badge still counts
+
+
+def test_skin_json_glow_values_are_checked(tmp_path):
+    path = tmp_path / "skin.json"
+    path.write_text(json.dumps({"shape": "square", "glow": {
+        "width": 10, "edge_opacity": 3, "idle": {"color": "pink", "strength": 0.2},
+        "working": {"scale": [1.2, 1.0], "period_ms": 2000}, "sparkle": 1}}), encoding="utf-8")
+    data = assets.read_skin_json(path)
+    glow = data["glow"]
+    assert data["shape"] == "free"                                               # unknown shape: the default
+    assert glow["width"] == 10 and glow["edge_opacity"] == assets.DEFAULT_GLOW["edge_opacity"]
+    assert glow["idle"] == {"color": assets.DEFAULT_GLOW["idle"]["color"], "strength": 0.2}
+    assert glow["working"]["scale"] == assets.DEFAULT_GLOW["working"]["scale"] and glow["working"]["period_ms"] == 2000
+    assert "sparkle" not in glow
+
+
+def test_glow_timeline():
+    glow = assets.DEFAULT_GLOW
+    idle, = glow_layers("idle", 0.0, glow)
+    assert idle == ("idle", glow["idle"]["strength"], 1.0, 1.0)
+    low, high = glow["working"]["strength"]
+    assert glow_layers("working", 0.0, glow)[0][1:3] == pytest.approx((low, 1.0))
+    assert glow_layers("working", 0.5, glow)[0][1:3] == pytest.approx((high, glow["working"]["scale"][1]))
+    assert glow_layers("working", 1.0, glow)[0][1] == pytest.approx(low)         # seamless loop
+    flash = glow["done"]["flash_ms"] / glow["done"]["return_ms"]
+    peak, = glow_layers("done", flash / 2, glow)
+    assert peak[0] == "done" and peak[1] == pytest.approx(1.0)                   # the bright pulse
+    middle = glow_layers("done", 0.8, glow)
+    assert [layer[0] for layer in middle] == ["done", "idle"]                     # crossfading back
+    assert glow_layers("done", 1.0, glow) == [idle]                              # and settled on idle
+    assert glow_layers("error", 0.3, glow) == [("error", glow["error"]["strength"], 1.0, 1.0)]
+
+
+def test_glow_per_state(app, settings):
     m = MascotWindow(settings)
-    assert m.glow.glowOpacity == 0.0 and not m.glow.animating             # idle: none
+    m.skin.glow["done"].update(flash_ms=60, return_ms=300)
+    assert m.glow.layers()[0][0] == "idle" and not m.glow.animating             # idle: a soft glow, static
     m.set_state("working")
-    assert m.glow.animating and m.glow.color.name() == mascot_module.GLOW_COLORS["working"].name()
+    assert m.glow.animating and m.glow.animation.duration() == 1400 and m.glow.animation.loopCount() == -1
     m.set_state("error")
-    assert not m.glow.animating and m.glow.glowOpacity == pytest.approx(0.75)
-    assert m.glow.color.name() == mascot_module.GLOW_COLORS["error"].name()
+    assert not m.glow.animating and m.glow.layers()[0][0] == "error"
     m.set_state("done", 3)
-    assert m.glow.animating and m.glow.color.name() == mascot_module.GLOW_COLORS["done"].name()
+    assert m.glow.animating and m.glow.layers()[0][0] == "done"
     pump(0.5)
-    assert not m.glow.animating and m.glow.glowOpacity == pytest.approx(0.0, abs=0.01)   # faded out
+    assert not m.glow.animating and m.glow.layers() == glow_layers("idle", 0, m.skin.glow)   # back to idle
+    assert m.count == 3                                                          # the badge stays
 
 
-def test_working_glow_moves_radius_and_opacity(app, settings):
+def test_working_glow_moves_opacity_and_scale(app, settings):
     m = MascotWindow(settings)
     m.set_state("working")
-    radii, opacities = set(), set()
+    scales, opacities = set(), set()
     end = time.monotonic() + 1.0
     while time.monotonic() < end:
         QApplication.processEvents()
-        radii.add(round(m.glow.glowRadius))
-        opacities.add(round(m.glow.glowOpacity, 2))
+        _, opacity, scale, _ = m.glow.layers()[0]
+        scales.add(round(scale, 3))
+        opacities.add(round(opacity, 2))
         time.sleep(0.02)
-    assert len(radii) > 3 and len(opacities) > 3
-    assert max(radii) <= WINDOW / 2                                          # inside the padded window
+    assert len(scales) > 3 and len(opacities) > 3
+
+
+def test_halo_is_rendered_once_per_color(app, settings):
+    m = MascotWindow(settings)
+    first = m.glow.halo("working", 1.0)
+    assert m.glow.halo("working", 1.0) is first                                  # cached
+    assert m.glow.halo("working", 2.0) is not first                              # Retina: its own copy
+    assert m.glow.halo("working", 2.0).width() == WINDOW * 2
+    m.set_skin("cloud")
+    assert m.glow.halo("working", 1.0) is not first                              # a new skin, new colors
+
+
+def test_halo_is_never_clipped(app, settings):
+    m = MascotWindow(settings)
+    m.set_state("working")
+    m.glow.animation.stop()
+    m.glow.t = 0.5                                                               # the widest moment
+    image = m.glow.grab().toImage()
+    edge = [image.pixelColor(i, j).alpha() for i in range(image.width()) for j in (0, image.height() - 1)]
+    edge += [image.pixelColor(i, j).alpha() for j in range(image.height()) for i in (0, image.width() - 1)]
+    assert max(edge) == 0                                                        # fades out before the window edge
+    c = image.width() // 2
+    assert image.pixelColor(c + round(EDGE) + 4, c).alpha() > 60                 # but is there outside the circle
+
+
+def test_ring_on_the_border_at_full_strength(app, settings):
+    m = MascotWindow(settings)
+    image = m.glow.grab().toImage()
+    c = image.width() // 2
+    ring = image.pixelColor(c + round(EDGE), c)
+    assert ring.alpha() > 200                                                    # even at the low idle strength
+    m.set_skin("robot")
+    assert m.glow.grab().toImage().pixelColor(c + round(EDGE), c).alpha() < ring.alpha()   # no ring: free shape
 
 
 def test_glow_window_follows_the_sprite(app, settings):
@@ -300,4 +397,24 @@ def test_no_repaints_and_no_timers_when_idle(app, settings):
     count["n"] = 0
     pump(0.5)
     assert count["n"] == 0 and not m.blink_timer.isActive() and not m.glow.animating
+    m.hide()
+
+
+def test_no_glow_repaints_when_idle_error_or_done(app, settings):
+    m = MascotWindow(settings)
+    m.skin.glow["done"].update(flash_ms=40, return_ms=150)
+    m.show()
+    count = {"n": 0}
+    original = m.glow.paintEvent
+
+    def counting(event):
+        count["n"] += 1
+        original(event)
+    m.glow.paintEvent = counting
+    for state in ("idle", "error", "done"):
+        m.set_state(state, 2 if state == "done" else None)
+        pump(0.3)                                                                # the done pulse plays out
+        count["n"] = 0
+        pump(0.4)
+        assert count["n"] == 0 and not m.glow.animating, state
     m.hide()

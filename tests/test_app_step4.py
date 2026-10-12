@@ -35,11 +35,12 @@ def test_glow_pulses_only_while_working(app, tmp_path):
     end = time.monotonic() + 1.0
     while time.monotonic() < end:
         QApplication.processEvents()
-        seen.add(round(mascot.glow.glowOpacity, 2))
+        seen.add(round(mascot.glow.layers()[0][1], 2))
         time.sleep(0.02)
-    assert len(seen) > 5 and 0.3 <= min(seen) and max(seen) <= 0.9        # it actually breathes, within bounds
+    low, high = mascot.skin.glow["working"]["strength"]
+    assert len(seen) > 5 and low - 0.01 <= min(seen) and max(seen) <= high + 0.01   # it breathes, within bounds
     mascot.set_state("idle")
-    assert not mascot.glow.animating and mascot.glow.glowOpacity == 0.0    # no CPU when not working
+    assert not mascot.glow.animating                                       # no CPU when not working
 
 
 # --- start at login --------------------------------------------------------------------------

@@ -158,8 +158,9 @@ python -m src.app --demo     # also a menu to preview the four mascot states
 **Using it**
 - **Drop a video** (mp4, mov, m4v, mkv, avi, mxf, webm) from Explorer or Finder onto the mascot; a blue
   dashed outline shows it will be accepted. Or **click** the mascot to pick a file.
-- While it works, a blue-violet glow pulses behind it and a blue ring shows progress; hover for the stage
-  and percentage. Done: a green glow that fades out. Error: a steady red glow. Idle: no glow.
+- A soft halo glows around it: idle pink-violet (static), working blue-violet breathing every 1.4 s with a blue
+  progress ring (hover for the stage and percentage), done a bright green pulse that settles back to idle within
+  3 s, error steady red. Colors and timings are in the skin's `skin.json` (`"glow"`).
 - Hover over it and it blinks, then again every 3 s while the cursor stays. *Skin → Blink while idle* adds a
   random blink every 5-10 s.
 - Only the mascot's own shape reacts (hover, click, drag, drop). Around it the window doesn't exist: clicks go to
@@ -189,7 +190,11 @@ python -m src.app --demo     # also a menu to preview the four mascot states
 - **States:** idle, working, done (with a red badge showing the number of issues, "99+" over 99) and error.
 - **Tray / menu bar icon** with *Show mascot* and *Quit*. Right-clicking the mascot also offers *Quit*,
   so the app can always be closed even where there is no tray.
-- **Skins** (right-click → *Skin*; the choice is remembered): *Inspector*, *Cloud* and *Robot* are placeholders.
+- **Skins** (right-click → *Skin*; the choice is remembered): *Avatar* (the default) is a round badge;
+  *Inspector*, *Cloud* and *Robot* are placeholders. To make a round skin from your own art (open eyes + closed
+  eyes, any size): `python scripts/add_avatar_skin.py "open.png" "closed.png" --key avatar --name Avatar --force`.
+  It crops inside the circle (dropping soft or ragged edges), lines the closed-eyes drawing up with the open one,
+  and writes `skin.json` with `"shape": "circle"`; the app masks the images to a circle when it loads them.
   A skin is a folder `assets/mascot/<name>/` with `idle.png`, `working.png`, `done.png`, `error.png` (120 x 120,
   transparent background, **no glow**: the app draws it), `@2x` versions at 240 x 240 for Retina and high-DPI
   screens, and a `skin.json`:

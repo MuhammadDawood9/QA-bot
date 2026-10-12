@@ -16,12 +16,22 @@ transparent background, no glow: the app draws that) and a skin.json:
      "state_eyes": {"idle": "open", "working": "focused", "done": "happy", "error": "cross"}}
         the images have no eyes; the app paints them at those positions (120 x 120 sprite
         coordinates). Styles: open, focused, happy, cross; a blink draws them closed.
+
+    "shape": "circle"   (optional; default "free") a round badge: every image is masked to the circle
+        inscribed in its square when loaded (white or ragged corners disappear), hover/click/drag/
+        drop respond only inside the circle, and the glow is a halo just outside its edge with a
+        thin bright ring on the border.
+
+    "glow": {...}       (optional) colors, strengths and timings of the glow; see DEFAULT_GLOW. Missing
+        or invalid values fall back to the defaults, so a skin can set just one color.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,10 +39,31 @@ from pathlib import Path
 log = logging.getLogger("qcbot.app")
 
 STATES = ("idle", "working", "done", "error")
-DEFAULT_SKIN = "inspector"
+DEFAULT_SKIN = "avatar"
 EYE_STYLES = ("open", "focused", "happy", "cross")
 DEFAULT_STATE_EYES = {"idle": "open", "working": "focused", "done": "happy", "error": "cross"}
 DEFAULT_EYE_SHAPE = {"left": [46, 64], "right": [74, 64], "radius": 6.5, "color": "#24303C", "highlight": "#FFFFFF"}
+SHAPES = ("free", "circle")
+
+# The glow, drawn by the app. Distances are logical pixels (Qt doubles them on Retina / 200%).
+#   width            how far the halo reaches beyond the circle edge
+#   edge_opacity     the halo's opacity at the edge, at strength 1
+#   ring_width       the thin bright ring on the border (circle skins), always at full strength
+#   shadow_opacity   a faint dark shadow under the halo, so it still reads on a white wallpaper
+#   idle / error     steady: color and strength (0-1)
+#   working          pulse between strength [low, high] and scale [low, high], once every period_ms
+#   done             a flash_ms bright pulse at full strength, then back to the idle glow by return_ms
+DEFAULT_GLOW = {
+    "width": 14,
+    "edge_opacity": 0.85,
+    "ring_width": 2,
+    "shadow_opacity": 0.22,
+    "idle": {"color": "#C08CF0", "strength": 0.4},
+    "working": {"color": "#7C6CFF", "strength": [0.45, 1.0], "scale": [1.0, 1.1], "period_ms": 1400},
+    "done": {"color": "#2ECC71", "strength": 0.9, "flash_ms": 450, "return_ms": 3000},
+    "error": {"color": "#EB4034", "strength": 0.9},
+}
+_COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
 
 def assets_dir() -> Path:
@@ -65,6 +96,8 @@ class Skin:
     blink_icons: dict = field(default_factory=dict)    # state -> QIcon (frames skins; only states that have one)
     eye_shape: dict = field(default_factory=lambda: dict(DEFAULT_EYE_SHAPE))
     state_eyes: dict = field(default_factory=lambda: dict(DEFAULT_STATE_EYES))
+    shape: str = "free"                        # "free" or "circle"
+    glow: dict = field(default_factory=lambda: copy.deepcopy(DEFAULT_GLOW))
 
     def can_blink(self, state: str) -> bool:
         return self.eyes == "drawn" or state in self.blink_icons
@@ -113,8 +146,69 @@ def read_skin_json(path: Path) -> dict:
             state_eyes[state] = style
         else:
             log.warning("%s: state_eyes %r: %r ignored (styles: %s)", path, state, style, ", ".join(EYE_STYLES))
+    outline = data.get("shape", "free")
+    if outline not in SHAPES:
+        log.warning("%s: shape must be \"free\" or \"circle\", not %r; using free", path, outline)
+        outline = "free"
     return {"name": str(data.get("name") or path.parent.name), "eyes": eyes, "eye_shape": shape,
-            "state_eyes": state_eyes}
+            "state_eyes": state_eyes, "shape": outline, "glow": read_glow(data.get("glow"), path)}
+
+
+def _valid(value, default) -> bool:
+    """value has the same kind as default: a #RRGGBB color, a [low, high] pair, a number >= 0
+    (at most 1 where the default is a fraction)."""
+    if isinstance(default, str):
+        return isinstance(value, str) and bool(_COLOR.match(value))
+    if isinstance(default, list):
+        return (isinstance(value, list) and len(value) == 2 and all(_valid(v, d) for v, d in zip(value, default))
+                and value[0] <= value[1])
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return False
+    return value <= 1 if isinstance(default, float) and default <= 1 else True
+
+
+def read_glow(given, path: Path) -> dict:
+    """skin.json's "glow" over DEFAULT_GLOW: each valid value replaces its default."""
+    glow = copy.deepcopy(DEFAULT_GLOW)
+    if given is None:
+        return glow
+    if not isinstance(given, dict):
+        log.warning("%s: glow must be an object; using the default glow", path)
+        return glow
+    for key, value in given.items():
+        default = glow.get(key)
+        if isinstance(default, dict) and isinstance(value, dict):
+            for sub, v in value.items():
+                if sub in default and _valid(v, default[sub]):
+                    default[sub] = v
+                else:
+                    log.warning("%s: glow.%s.%s = %r ignored", path, key, sub, v)
+        elif default is not None and not isinstance(default, dict) and _valid(value, default):
+            glow[key] = value
+        else:
+            log.warning("%s: glow.%s = %r ignored", path, key, value)
+    return glow
+
+
+def circle_icon(icon):
+    """The same icon with every size masked to the circle inscribed in its square (antialiased)."""
+    from PySide6.QtCore import QRectF, QSize, Qt
+    from PySide6.QtGui import QBrush, QIcon, QImage, QPainter, QPixmap
+
+    result = QIcon()
+    for size in sorted({s.width() for s in icon.availableSizes()} or {120}):
+        source = icon.pixmap(QSize(size, size), 1.0)
+        image = QImage(source.width(), source.height(), QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(source))                      # textured brush: the image, cut to the ellipse
+        side = min(source.width(), source.height())
+        painter.drawEllipse(QRectF((source.width() - side) / 2, (source.height() - side) / 2, side, side))
+        painter.end()
+        result.addPixmap(QPixmap.fromImage(image))
+    return result
 
 
 def load_skin(key: str | None = None, base: Path | None = None) -> Skin:
@@ -128,13 +222,14 @@ def load_skin(key: str | None = None, base: Path | None = None) -> Skin:
     folder = base / key
     meta = read_skin_json(folder / "skin.json") if (folder / "skin.json").is_file() else read_skin_json(Path("-"))
     skin = Skin(key=key, name=meta["name"], eyes=meta["eyes"], folder=folder, eye_shape=meta["eye_shape"],
-                state_eyes=meta["state_eyes"])
+                state_eyes=meta["state_eyes"], shape=meta["shape"], glow=meta["glow"])
     for state in STATES:
-        skin.icons[state] = load_icon(folder / f"{state}.png")
+        icon = load_icon(folder / f"{state}.png")
+        skin.icons[state] = circle_icon(icon) if skin.shape == "circle" and not icon.isNull() else icon
         if skin.eyes == "frames":
             blink = load_icon(folder / f"{state}_blink.png", warn=False)
             if not blink.isNull():
-                skin.blink_icons[state] = blink
+                skin.blink_icons[state] = circle_icon(blink) if skin.shape == "circle" else blink
     return skin
 
 
