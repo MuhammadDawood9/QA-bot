@@ -42,9 +42,12 @@ def docx_of(written):
     return path, Document(str(path))
 
 
+DOCX = "clip_QC_2026-10-12.docx"            # <video or srt name>_QC_<date>.docx
+
+
 def test_formats_from_settings(tmp_path):
-    assert [p.name for p in make(tmp_path / "a")] == ["report.md", "report.docx", "issues.csv"]
-    assert [p.name for p in make(tmp_path / "b", formats=["docx"])] == ["report.docx", "issues.csv"]
+    assert [p.name for p in make(tmp_path / "a")] == ["report.md", DOCX, "issues.csv"]
+    assert [p.name for p in make(tmp_path / "b", formats=["docx"])] == [DOCX, "issues.csv"]
     assert [p.name for p in make(tmp_path / "c", formats=["md"], write_csv=False)] == ["report.md"]
 
 
@@ -54,24 +57,26 @@ def test_word_document_structure(tmp_path):
     assert headings == [
         ("Title", "QC report: clip.srt"),
         ("Heading 1", "Summary"),
-        ("Heading 1", "Flagged captions"),
-        ("Heading 1", "Details"),
-        ("Heading 2", "00:02.100, caption #2"),
-        ("Heading 2", "00:04.200, caption #3"),
+        ("Heading 1", "Issues"),
         ("Heading 1", "Appendix: all captions"),
     ]
     text = "\n".join(p.text for p in doc.paragraphs)
     assert "Client: E3JB" in text and "Rules version: 2026-10-12" in text
-    assert "3 issues on 2 of 4 captions." in text
+    assert "3 issues; 2 of 4 captions flagged." in text
     assert doc.core_properties.title == "QC report: clip.srt"
 
 
 def test_tables(tmp_path):
     _, doc = docx_of(make(tmp_path))
-    summary, index, detail2, detail3, appendix = doc.tables
+    summary, issues, appendix = doc.tables
     assert [c.text for c in summary.rows[0].cells] == ["Issue type", "High", "Medium", "Low", "Total"]
     assert [c.text for c in summary.rows[-1].cells] == ["All", "1", "1", "1", "3"]
-    assert [c.text for c in detail2.rows[1].cells][:2] == ["Extra word (audio)", "high"]   # worst first
+    assert [c.text for c in issues.rows[0].cells] == ["Time", "Screenshot", "Original text", "What's wrong",
+                                                      "Suggested fix", "Confidence"]
+    assert len(issues.rows) == 1 + len(ISSUES)
+    first = [c.text for c in issues.rows[1].cells]
+    assert first[0] == "00:02.100" and first[1] == "(no video)" and first[2] == "We need to to talk"
+    assert first[3].startswith("Extra word (audio)  high") and first[5] == "1.00"    # worst first
     assert len(appendix.rows) == 1 + len(CAPTIONS)
     for t in doc.tables:                                   # header rows repeat on every page
         assert t.rows[0]._tr.trPr.find(qn("w:tblHeader")) is not None
@@ -86,26 +91,24 @@ def test_flagged_rows_are_bold_and_shaded(tmp_path):
     assert not any(r.bold for r in plain.cells[2].paragraphs[0].runs)
 
 
-def test_links_point_to_bookmarks(tmp_path):
+def test_rows_never_split_across_pages(tmp_path):
     _, doc = docx_of(make(tmp_path))
-    body = doc.element.body
-    bookmarks = {b.get(qn("w:name")) for b in body.iter(qn("w:bookmarkStart"))}
-    anchors = {h.get(qn("w:anchor")) for h in body.iter(qn("w:hyperlink"))}
-    assert bookmarks == {"caption_2", "caption_3"}
-    assert anchors == bookmarks
+    issues = doc.tables[1]
+    assert all(row._tr.trPr.find(qn("w:cantSplit")) is not None for row in issues.rows[1:])
 
 
 def test_control_characters_are_removed(tmp_path):
     _, doc = docx_of(make(tmp_path))
-    text = "\n".join(p.text for p in doc.paragraphs)
+    text = "\n".join(c.text for t in doc.tables for row in t.rows for c in row.cells)
     assert "Odd control char" in text and "\x07" not in text
 
 
-def test_page_size(tmp_path):
+def test_page_size_is_landscape(tmp_path):
     _, doc = docx_of(make(tmp_path / "a4"))
-    assert abs(doc.sections[0].page_width - Cm(21)) < Cm(0.01)
+    assert abs(doc.sections[0].page_width - Cm(29.7)) < Cm(0.01)
+    assert abs(doc.sections[0].page_height - Cm(21)) < Cm(0.01)
     _, doc = docx_of(make(tmp_path / "letter", page_size="letter"))
-    assert abs(doc.sections[0].page_width - Cm(21.59)) < Cm(0.01)
+    assert abs(doc.sections[0].page_width - Cm(27.94)) < Cm(0.01)
 
 
 def tiny_png() -> bytes:
@@ -126,9 +129,9 @@ def test_screenshots_are_embedded(tmp_path, monkeypatch):
         return True
     monkeypatch.setattr(builder, "grab_frame", fake_grab)
     _, doc = docx_of(make(tmp_path, video=Path("clip.mp4")))
-    assert len(doc.inline_shapes) == 2
-    assert "Frame at 00:03.100" in "\n".join(p.text for p in doc.paragraphs)
-
+    assert len(doc.inline_shapes) == len(ISSUES)           # one screenshot in every issue row
+    issues = doc.tables[1]
+    assert all(row.cells[1]._tc.xpath(".//pic:pic") for row in issues.rows[1:])
 
 def test_settings_zoom_is_schema_valid(tmp_path):
     _, doc = docx_of(make(tmp_path))

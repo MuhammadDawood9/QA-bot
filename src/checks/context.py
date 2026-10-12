@@ -22,9 +22,11 @@ class CheckContext:
     llm: object | None = None                              # API client; tests put a fake here
     llm_cache_file: Path | None = None                     # where API answers are cached
     transcript: list | None = None                         # SpokenWords from Whisper; None = no video given
+    screen_text: list | None = None                        # on-screen texts that aren't captions; None = not read
     stats: dict = field(default_factory=dict)              # per-check counters for the CLI summary
     ocr_low_confidence: float = 0.75                       # OCR captions read less surely: text issues marked doubtful
     ocr_always_doubtful: tuple[str, ...] = ()              # issue types always marked doubtful on OCR captions
+    progress: object | None = None                         # a src.utils.progress.Stage for slow checks, or None
 
     @cached_property
     def dictionary(self) -> Dictionary:

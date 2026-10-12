@@ -1,8 +1,11 @@
-"""The QC report as a Word document (report.docx), with the same content as report.md.
+"""The QC report as a Word document, from python-docx.
 
-Uses python-docx. Built-in heading styles (so Word's Navigation Pane works), real tables with
-fixed column widths and header rows that repeat on every page, screenshots embedded in the file,
-links from the index and appendix to each caption's section, and page numbers in the footer.
+Landscape page. A header (video, client, which checks ran), a summary of the issue counts per
+type and severity, then one table with a row per issue, in time order: time, a screenshot of the
+frame, the original text, what's wrong, the suggested fix, and confidence. An appendix lists every
+caption, flagged ones in bold. Header rows repeat on every page and rows never split across pages.
+
+Saved as reports/<video>_<date-time>/<video>_QC_<date>.docx.
 """
 
 from __future__ import annotations
@@ -11,6 +14,7 @@ import re
 from pathlib import Path
 
 from docx import Document
+from docx.enum.section import WD_ORIENT
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
@@ -18,21 +22,29 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
 from src.models import SEVERITIES
-from src.report.builder import ReportData, captions_source, label, worst
+from src.report.builder import ReportData, captions_source, label
 from src.utils.timecode import format_timestamp
 
-PAGE_SIZES = {"a4": (21.0, 29.7), "letter": (21.59, 27.94)}     # cm
-MARGIN_CM = 2.0
+PAGE_SIZES = {"a4": (21.0, 29.7), "letter": (21.59, 27.94)}     # cm, portrait; the report turns them landscape
+MARGIN_CM = 1.5
 SEVERITY_COLORS = {"high": "C00000", "medium": "C55A11", "low": "7F7F7F"}
 HEADER_FILL = "D9E2F3"       # light blue header rows
 FLAGGED_FILL = "FFF2CC"      # light yellow for flagged captions in the appendix
-LINK_COLOR = "0563C1"
+SHOT_WIDTH_CM = 4.2          # screenshot width in the table (landscape frames)
+SHOT_HEIGHT_CM = 5.0         # screenshot height for vertical (9:16) frames
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 
 def clean(text) -> str:
     """Text Word can store: one line, no control characters (they would make the file invalid)."""
     return _CONTROL_CHARS.sub("", " ".join(str(text).split()))
+
+
+def docx_name(data: ReportData) -> str:
+    """<video>_QC_<date>.docx"""
+    info = data.info
+    stem = (info.video or info.srt or Path("report")).stem
+    return f"{stem}_QC_{info.generated:%Y-%m-%d}.docx"
 
 
 # --- small XML helpers python-docx doesn't offer -------------------------------------
@@ -53,44 +65,6 @@ def repeat_header(row) -> None:
     tr_pr.append(flag)
 
 
-def bookmark(paragraph, name: str, bookmark_id: int) -> None:
-    start = OxmlElement("w:bookmarkStart")
-    start.set(qn("w:id"), str(bookmark_id))
-    start.set(qn("w:name"), name)
-    end = OxmlElement("w:bookmarkEnd")
-    end.set(qn("w:id"), str(bookmark_id))
-    p = paragraph._p
-    p_pr = p.find(qn("w:pPr"))
-    if p_pr is not None:
-        p_pr.addnext(start)
-    else:
-        p.insert(0, start)
-    p.append(end)
-
-
-def internal_link(paragraph, text: str, anchor: str, bold: bool = False) -> None:
-    link = OxmlElement("w:hyperlink")
-    link.set(qn("w:anchor"), anchor)
-    link.set(qn("w:history"), "1")
-    run = OxmlElement("w:r")
-    r_pr = OxmlElement("w:rPr")
-    color = OxmlElement("w:color")
-    color.set(qn("w:val"), LINK_COLOR)
-    underline = OxmlElement("w:u")
-    underline.set(qn("w:val"), "single")
-    if bold:
-        r_pr.append(OxmlElement("w:b"))
-    r_pr.append(color)
-    r_pr.append(underline)
-    run.append(r_pr)
-    t = OxmlElement("w:t")
-    t.set(qn("xml:space"), "preserve")
-    t.text = clean(text)
-    run.append(t)
-    link.append(run)
-    paragraph._p.append(link)
-
-
 def page_number_field(paragraph) -> None:
     field = OxmlElement("w:fldSimple")
     field.set(qn("w:instr"), "PAGE")
@@ -100,10 +74,6 @@ def page_number_field(paragraph) -> None:
     run.append(t)
     field.append(run)
     paragraph._p.append(field)
-
-
-def anchor_name(cid: int) -> str:
-    return f"caption_{cid}"
 
 
 # --- tables ---------------------------------------------------------------------------
@@ -150,7 +120,7 @@ def add_row(t, values: list, bold: bool = False, fill: str | None = None, colors
         if i in t._right:
             paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
         if callable(value):
-            value(paragraph)                         # e.g. a link
+            value(paragraph)                         # e.g. a screenshot, or rich text
         else:
             run = paragraph.add_run(clean(value))
             run.bold = bold
@@ -162,19 +132,42 @@ def add_row(t, values: list, bold: bool = False, fill: str | None = None, colors
     return row
 
 
-def link_cell(text: str, cid: int, bold: bool = False):
-    return lambda paragraph: internal_link(paragraph, text, anchor_name(cid), bold)
-
-
 # --- the document -----------------------------------------------------------------------
+
+def picture(path: Path):
+    """A cell filler: the screenshot, sized by its shape (wide frames by width, tall ones by height)."""
+    from PIL import Image
+
+    with Image.open(path) as img:
+        w, h = img.size
+
+    def fill(paragraph):
+        size = {"width": Cm(SHOT_WIDTH_CM)} if w >= h else {"height": Cm(SHOT_HEIGHT_CM)}
+        paragraph.add_run().add_picture(str(path), **size)
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    return fill
+
+
+def problem(issue):
+    """A cell filler: the issue type and severity (colored), then the explanation."""
+    def fill(paragraph):
+        paragraph.add_run(label(issue.type)).bold = True
+        sev = paragraph.add_run(f"  {issue.severity}")
+        sev.bold = True
+        sev.font.color.rgb = RGBColor.from_string(SEVERITY_COLORS[issue.severity])
+        paragraph.add_run().add_break()
+        paragraph.add_run(clean(issue.message))
+    return fill
+
 
 def write_docx(data: ReportData) -> Path:
     settings, info = data.settings, data.info
     doc = Document()
-    width_cm, height_cm = PAGE_SIZES.get(str(settings.get("page_size", "a4")).lower(), PAGE_SIZES["a4"])
-    content_cm = width_cm - 2 * MARGIN_CM
+    short_cm, long_cm = PAGE_SIZES.get(str(settings.get("page_size", "a4")).lower(), PAGE_SIZES["a4"])
+    content_cm = long_cm - 2 * MARGIN_CM
     for section in doc.sections:
-        section.page_width, section.page_height = Cm(width_cm), Cm(height_cm)
+        section.orientation = WD_ORIENT.LANDSCAPE
+        section.page_width, section.page_height = Cm(long_cm), Cm(short_cm)
         section.left_margin = section.right_margin = Cm(MARGIN_CM)
         section.top_margin = section.bottom_margin = Cm(MARGIN_CM)
     # python-docx's built-in template leaves out the zoom percentage the Word schema requires.
@@ -188,7 +181,6 @@ def write_docx(data: ReportData) -> Path:
     title = (info.video or info.srt).name
     doc.core_properties.title = f"QC report: {title}"
     doc.core_properties.author = "Video QC Bot"
-
     footer = doc.sections[0].footer.paragraphs[0]
     footer.text = f"QC report: {clean(title)}    |    page "
     page_number_field(footer)
@@ -215,19 +207,19 @@ def write_docx(data: ReportData) -> Path:
         p.paragraph_format.space_after = Pt(0)
         for line in info.checks:
             doc.add_paragraph(clean(line), style="List Bullet")
-    n = len(data.issues)
-    p = doc.add_paragraph()
-    p.paragraph_format.space_before = Pt(8)
-    p.add_run(f"{n} issue{'s' if n != 1 else ''} on {len(data.flagged)} of {len(data.captions)} captions.").bold = True
 
-    # Summary
+    # Summary: counts per issue type
     doc.add_heading("Summary", level=1)
+    n = len(data.issues)
+    on_captions = sum(1 for cid in data.flagged if cid > 0)
+    p = doc.add_paragraph()
+    p.add_run(f"{n} issue{'s' if n != 1 else ''}; {on_captions} of {len(data.captions)} captions flagged.").bold = True
     if not data.issues:
         doc.add_paragraph("No issues found.")
     else:
         counts = data.counts()
-        rest = (content_cm - 6.0) / 4
-        t = table(doc, ["Issue type", "High", "Medium", "Low", "Total"], [6.0, rest, rest, rest, rest],
+        rest = (content_cm - 8.0) / 4
+        t = table(doc, ["Issue type", "High", "Medium", "Low", "Total"], [8.0, rest, rest, rest, rest],
                   right_align={1, 2, 3, 4})
         for kind in data.types():
             row = [counts[(kind, s)] for s in SEVERITIES]
@@ -237,67 +229,38 @@ def write_docx(data: ReportData) -> Path:
         doc.add_paragraph("Severity: high is almost always a real mistake, medium usually is, low is worth a "
                           "glance (often a name to add to the glossary).").paragraph_format.space_before = Pt(6)
 
-    # Index of flagged captions
-    if data.flagged:
-        doc.add_heading("Flagged captions", level=1)
-        t = table(doc, ["Time", "Caption", "Problems", "Worst"], [2.2, content_cm - 2.2 - 4.8 - 1.8, 4.8, 1.8])
-        for cid in data.flagged:
-            group = data.by_caption[cid]
-            problems = ", ".join(dict.fromkeys(label(i.type) for i in group))
-            text = data.caption_text(cid)
-            short = text if len(text) <= 70 else text[:67] + "..."
-            sev = worst(group)
-            add_row(t, [link_cell(format_timestamp(group[0].timestamp), cid), f"#{cid} {short}", problems, sev],
-                    colors={3: SEVERITY_COLORS[sev]})
-
-    # Details, one section per flagged caption
-    if data.flagged:
-        doc.add_heading("Details", level=1)
-        for n_section, cid in enumerate(data.flagged, start=1):
-            group = data.by_caption[cid]
-            heading = doc.add_heading(f"{format_timestamp(group[0].timestamp)}, caption #{cid}", level=2)
-            bookmark(heading, anchor_name(cid), n_section)
-            # Keep each caption's heading, text, screenshot and table on the same page.
-            on_screen = doc.add_paragraph(f"On screen {data.on_screen(cid)}")
-            on_screen.paragraph_format.space_after = Pt(2)
-            on_screen.paragraph_format.keep_with_next = True
-            quote = doc.add_paragraph(style="Quote")
-            quote.add_run(clean(data.caption_text(cid)))
-            quote.paragraph_format.keep_with_next = True
-            if cid in data.shots:
-                image, at = data.shots[cid]
-                doc.add_picture(str(data.folder / image), width=Cm(min(12.0, content_cm)))
-                doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
-                doc.paragraphs[-1].paragraph_format.keep_with_next = True
-                note = doc.add_paragraph()
-                note.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                note.add_run(f"Frame at {format_timestamp(at)}").italic = True
-                note.paragraph_format.keep_with_next = True
-            elif data.wanted_shots:
-                missing = doc.add_paragraph()
-                missing.add_run("(no screenshot: ffmpeg could not get a frame at this time)").italic = True
-                missing.paragraph_format.keep_with_next = True
-            fixed = 3.2 + 1.8 + 2.3
-            t = table(doc, ["Problem", "Severity", "What's wrong", "Suggested fix", "Confidence"],
-                      [3.2, 1.8, (content_cm - fixed) * 0.55, (content_cm - fixed) * 0.45, 2.3], right_align={4})
-            for issue in group:
-                add_row(t, [label(issue.type), issue.severity, issue.message, issue.suggestion,
-                            f"{issue.confidence:.2f}"], colors={1: SEVERITY_COLORS[issue.severity]})
+    # The issues, in time order
+    if data.issues:
+        doc.add_heading("Issues", level=1)
+        fixed = 2.0 + SHOT_WIDTH_CM + 0.4 + 2.0
+        text_cols = content_cm - fixed
+        widths = [2.0, SHOT_WIDTH_CM + 0.4, text_cols * 0.26, text_cols * 0.42, text_cols * 0.32, 2.0]
+        t = table(doc, ["Time", "Screenshot", "Original text", "What's wrong", "Suggested fix", "Confidence"],
+                  widths, right_align={5})
+        for issue in data.issues:
+            shot = data.shots.get(issue.caption_id)
+            if shot is not None:
+                screenshot = picture(data.folder / shot[0])
+            else:
+                screenshot = "(no frame)" if data.wanted_shots else "(no video)"
+            add_row(t, [format_timestamp(issue.timestamp), screenshot, issue.original, problem(issue),
+                        issue.suggestion, f"{issue.confidence:.2f}"])
 
     # Appendix
-    doc.add_heading("Appendix: all captions", level=1)
-    doc.add_paragraph("Flagged captions are in bold on a yellow background.")
-    t = table(doc, ["Time", "#", "Caption", "Issues"], [2.2, 1.2, content_cm - 2.2 - 1.2 - 4.6, 4.6],
-              right_align={1})
-    for cap in data.captions:
-        group = data.by_caption.get(cap.id, [])
-        if group:
-            found = ", ".join(dict.fromkeys(label(i.type) for i in group))
-            add_row(t, [format_timestamp(cap.start), link_cell(str(cap.id), cap.id, bold=True),
-                        cap.flat_text, found], bold=True, fill=FLAGGED_FILL)
-        else:
-            add_row(t, [format_timestamp(cap.start), str(cap.id), cap.flat_text, ""])
+    if data.captions:
+        doc.add_heading("Appendix: all captions", level=1)
+        doc.add_paragraph("Flagged captions are in bold on a yellow background.")
+        t = table(doc, ["Time", "#", "Caption", "Issues"], [2.2, 1.2, content_cm - 2.2 - 1.2 - 6.0, 6.0],
+                  right_align={1})
+        for cap in data.captions:
+            group = data.by_caption.get(cap.id, [])
+            if group:
+                found = ", ".join(dict.fromkeys(label(i.type) for i in group))
+                add_row(t, [format_timestamp(cap.start), str(cap.id), cap.flat_text, found], bold=True,
+                        fill=FLAGGED_FILL)
+            else:
+                add_row(t, [format_timestamp(cap.start), str(cap.id), cap.flat_text, ""])
 
-    path = data.folder / "report.docx"
+    path = data.folder / docx_name(data)
     doc.save(str(path))
     return path

@@ -18,6 +18,7 @@ paths:
   llm_cache_file: cache/punctuation.json   # cached API answers; delete it to force a fresh review
   transcript_cache_dir: cache/transcripts  # one Whisper transcript per video (by file hash)
   ocr_cache_dir: cache/ocr                 # captions read from each video (by file hash and OCR settings)
+  color_cache_dir: cache/color             # color measurements per video
   models_dir: models                       # Whisper models, downloaded on first use
 
 # Frame rate used to convert HH:MM:SS:FF timecodes (e.g. from ClickUp comments) to seconds.
@@ -40,6 +41,8 @@ ocr:
   max_gap_sec: 0.5             # a caption missing from frames for up to this long (animation, flicker) is still one caption
   min_single_frame_score: 0.8  # text seen in only one frame is kept only if read at least this surely
   block_gap_lines: 1.5         # lines further apart than this many line heights are separate texts
+  max_caption_sec: 12.0        # text on screen longer than this is a logo or title, not a caption
+  screen_text_every_sec: 2.0   # read the whole frame this often for logos and name titles (0 = off)
   det_max_side: 960            # frames are shrunk to this many pixels on the long side for text finding
   cpu_threads: -1              # -1 = all cores
   # Spelling, capitalization, spacing and punctuation flags on a caption the OCR read less surely
@@ -172,6 +175,17 @@ checks:
     same_word_min_ratio: 85          # spellings this similar count as the same word ("hourse"/"hours")
     min_matched_fraction: 0.5        # skip captions where under half the words are heard (titles, on-screen text)
     early_threshold_sec: 0.7         # flag a caption on screen this long before its first word is said
+    late_threshold_sec: 0.7          # flag a caption that comes up this long after its first word is said
+    late_lookback_sec: 5.0           # how far before a caption to look for its first words when it comes up late
+    # Whole-video sync: when every caption is shifted by about the same amount, report it once and
+    # compare words with the captions moved back, instead of flagging every caption as late.
+    max_offset_sec: 5.0              # largest shift looked for; 0 = off
+    sync_threshold_sec: 0.7          # smaller shifts are left to the per-caption early/late checks
+    min_sync_match_fraction: 0.4     # at least this share of caption words must line up at the shift
+    # Speech with no caption on screen: flagged when it lasts this long AND has this many words.
+    uncaptioned_min_sec: 1.5
+    uncaptioned_min_words: 4
+    uncaptioned_max_pause_sec: 1.5   # a longer pause splits it into separate stretches
     edge_slack_sec: 0.2
     ignore_spoken_repeats: true      # a stutter ("to to") the caption leaves out is not a caption mistake
     # Ignored on both sides. Quoted: some short words are special in YAML.
@@ -183,6 +197,46 @@ checks:
       "til": "until", "till": "until", "mr": "mister", "mrs": "missus", "dr": "doctor",
       "vs": "versus", "yall": "you all",
     }
+
+  # Caption words compared with names in the video's own graphics (logo "MAIER", caption "Meyer").
+  # Runs when a video is given; the graphics are read by the OCR (ocr.screen_text_every_sec).
+  screen_text:
+    enabled: true
+    min_word_length: 4
+    max_edits: 2                 # letters that may differ (1 for words of 4 letters)
+    max_term_frequency: 5000     # on-screen words more common than this aren't treated as names
+    require_capital: true        # only check capitalized caption words; false for all-lowercase styles
+
+# Color grading, measured shot by shot when a video is given (--no-color to skip).
+# A client with a deliberate look changes these in a "color:" block in its client file, e.g.
+#   color:
+#     skip: ["saturation"]          # this client's grey, desaturated look is intended
+color:
+  enabled: true
+  sample_fps: 4                 # frames measured per second
+  cut_threshold: 0.35           # color-histogram change (0-1) that counts as a cut between shots
+  min_shot_sec: 0.5
+  skin_tones: true              # find faces (YuNet model, downloaded once, 232 KB) and measure skin
+  face_every_n_frames: 2
+  skip: []                      # issue types not to report, e.g. ["saturation", "color_cast"]
+  # Flags on one shot. Brightness values are 0-255; color values are Lab (neutral = 0).
+  clipped_white: 0.04           # share of pure white pixels that counts as overexposed (2.5x = high)
+  clipped_black: 0.15           # share of pure black pixels that counts as crushed
+  dark_median: 40               # too dark: middle brightness below this...
+  dark_white_level: 200         # ...and even the brightest parts below this
+  lifted_black_level: 40        # darkest 2% brighter than this = lifted, washed-out blacks
+  min_tonal_range: 120          # brightest minus darkest below this = flat
+  dull_chroma: 6                # mean saturation below this = almost grey
+  oversaturated_chroma: 40
+  cast_strength: 6              # tint of whites and greys that counts as a color cast
+  skin_hue_range: [20, 70]      # natural skin hue, degrees (Lab); below = pink/magenta, above = yellow/green
+  skin_min_chroma: 9
+  skin_max_chroma: 38
+  # Shots that don't match
+  mismatch_min_shot_sec: 1.0    # shorter shots aren't compared
+  skin_hue_jump: 12             # skin hue change between consecutive shots with faces, degrees
+  mismatch_cast: 8              # tint difference from the video's typical shot
+  mismatch_chroma: 12           # saturation difference from the video's typical shot
 
 # The QC report (python -m src.main ... --report).
 report:

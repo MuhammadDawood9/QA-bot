@@ -301,16 +301,57 @@ Each run writes a new folder, `reports/<video name>_<date-time>/` (earlier repor
 
 | File | What's in it |
 |---|---|
-| `report.docx` | The report as a Word document: header (video, captions, client, date, rules version, which checks ran or were skipped and why), a summary table of issues by type and severity, an index of flagged captions with clickable times, one section per flagged caption (screenshot, caption text, every problem with what's wrong, suggested fix and confidence), and an appendix of all captions with the flagged ones bold on yellow. A4 pages with page numbers; each caption's section stays on one page; table headers repeat on every page |
-| `report.md` | The same report in Markdown |
+| `<video>_QC_<date>.docx` | The report as a Word document, landscape: header (video, captions, client, date, rules version, which checks ran or were skipped and why), a summary of issue counts per type and severity, then one table with a row per issue in time order: time, screenshot of the frame, original text, what's wrong, suggested fix, confidence. An appendix lists all captions, flagged ones bold on yellow. Table headers repeat on every page and rows never split |
+| `report.md` | The same issues in Markdown, grouped per caption with one screenshot each |
 | `screenshots/` | One frame per flagged caption, taken from the middle of the caption so burned-in text is fully on screen (needs `--video` and ffmpeg) |
 | `issues.csv` | One row per issue (time, caption, type, severity, problem, fix, confidence). Opens in Excel with accents and curly quotes intact; usable for a ClickUp import |
 
-Open `report.docx` in Word (Windows or Mac), or `report.md` in VS Code (right-click, *Open Preview*).
+Open the `.docx` in Word (Windows or Mac), or `report.md` in VS Code (right-click, *Open Preview*).
 Both have the screenshots in place; the Word file carries them inside it, so it can be sent on its own. Problems found by two checks on the same caption (for example a doubled
 word found by both the spelling check and the audio check) appear together in one section.
 Settings are under `report:` in `config.yaml`: formats (`["md", "docx"]`), Word page size (`a4` or
 `letter`), output folder, screenshots on/off, frame position and width, CSV on/off.
+
+### Using the engine from Python
+
+The CLI and the desktop app both call one function:
+
+```python
+import threading
+from src.engine import run_qc, build_docx_report, QCOptions, QCError, Cancelled
+
+stop = threading.Event()                      # stop.set() from another thread cancels the run
+
+def progress(stage, fraction):                # e.g. ("Reading captions", 0.12); fraction is for the whole run
+    print(f"{stage}: {fraction:.0%}")
+
+try:
+    issues = run_qc("clip.mp4", "E8D", progress, stop)          # options=QCOptions(...) for more control
+    print(len(issues), "issues")
+    print(build_docx_report(issues))          # reports/clip_<date-time>/clip_QC_<date>.docx
+except QCError as exc:                        # bad input; the message is written for the user
+    print(exc)
+except Cancelled:
+    print("cancelled")
+```
+
+`QCOptions` takes `srt_path` (use a caption file instead of reading the video), `use_llm`, `check_color`,
+`disabled_checks` (check names from `src/checks/__init__.py`, or `"color"`) and `config_path`. The engine never prints:
+messages go to the `qcbot` loggers.
+
+### Evaluating the color checks against your notes
+
+```
+python scripts/evaluate.py --make-template      # drafts data/ground_truth.csv from the spreadsheet's 166 color notes
+python scripts/evaluate.py                      # after filling it in; videos are looked up in data/samples/ and data/
+python scripts/evaluate.py --videos "D:/QC videos" --tolerance 2
+```
+
+In `data/ground_truth.csv`, replace each `TODO <task name>` with the video's file name, check the guessed `issue_type`
+(or use `color_grading` when the note doesn't say which problem), and delete notes that are creative ideas rather than
+mistakes. A flag matches a note when the note's time falls in the flagged shot ±2 s. The script prints recall, precision
+and false alarms per minute for each color check, and writes `reports/evaluation_<date-time>/` with `evaluation.md`,
+`misses.csv` and `false_alarms.csv` so you can look at each one. It doesn't change any threshold.
 
 ### Captions vs audio (Whisper)
 
@@ -334,6 +375,19 @@ python -m src.main --srt captions.srt --video video.mp4 --client E3JB
 | `missing_word` | Missing word "but": caption says "hard, it", audio sounds like "hard, but it". |
 | `extra_word` | Extra word "to" (repeated): caption says "need to to", audio sounds like "need to". |
 | `caption_early` | Caption appears 1.3s before "Bright" is spoken. |
+| `caption_late` | Caption appears 1.3s after "We" is spoken. |
+| `caption_sync` | All captions are about 3.1s late. Reported once for the whole video. |
+| `uncaptioned_speech` | 66 spoken words with no caption, 00:05.0 to 00:28.1, with the words to add. |
+
+**Sync first.** Before comparing words, the bot tries shifting all the captions by up to 5 s
+(`max_offset_sec`) and keeps the shift where the most caption words line up with the audio. If
+that's clearly better than no shift, it reports one `caption_sync` issue and compares everything
+else with the captions moved back. Without this, captions that are all 3 s late would show up as
+every caption being late and every word missing.
+
+**Speech with no caption** is a stretch of at least `uncaptioned_min_sec` (1.5 s) and
+`uncaptioned_min_words` (4) of clearly heard speech that no caption on screen covers. It has no
+caption number; the report lists it as "no caption".
 
 To keep false alarms down:
 - Only words Whisper heard clearly count as evidence (`min_word_probability`, 0.7). For an extra
@@ -352,6 +406,54 @@ python -m pytest --run-slow tests/test_sample_video.py
 The script uses the computer's own text-to-speech (Windows or macOS) to read a script, burns the
 captions into the picture, and writes a caption file with 6 planted mistakes from the real QC notes.
 `synthetic_sample_expected.json` lists them. Add `--report` to the second command to see a full report.
+
+### Names vs on-screen graphics
+
+When a video is given, the bot also reads the whole frame every 2 s (`ocr.screen_text_every_sec`)
+for text that isn't a caption: logos, name titles, lower thirds. Text that stays on screen longer
+than `ocr.max_caption_sec` (12 s) is treated as a graphic, not a caption.
+
+A capitalized caption word that is one or two letters away from a rare word in those graphics is
+flagged as `screen_text_mismatch`: the logo says "MAIER", the caption says "Meyer". Common words
+("State", "Representative") never trigger it. It's `high` when the next word is also a name
+from the graphics ("Elizabeth Meyer" under "ELIZABETH MAIER").
+
+### Color grading
+
+Runs whenever a video is given (`--no-color` skips it). The video is cut into shots where the
+colors jump, and every shot is measured 4 times a second, leaving out the client's caption region
+(white caption text would otherwise count as blown highlights). Black screens are skipped.
+
+| Issue type | What it means | From the QC notes |
+|---|---|---|
+| `overexposed` | 4%+ of the picture clipped pure white (10%+ = high) | "too bright", "highlights clipped" (45 notes) |
+| `underexposed` | Middle brightness under 40/255 and no real highlights | "too much dark" |
+| `crushed_blacks` | 15%+ of the picture pure black | "crushed shadows" |
+| `flat_contrast` | Lifted, grey blacks, or a narrow tonal range | "flat contrast with lifted black levels" (32) |
+| `saturation` | Almost grey, or oversaturated | "colors are dull" (31) |
+| `color_cast` | Whites and greys tinted magenta, green, warm or cool | "the magenta is going too much" (23) |
+| `skin_tone` | Skin on detected faces too pink, too yellow/green, too orange, or grey | "skin color yellow" (43) |
+| `shot_mismatch` | Skin tone jumps from the previous shot with a face, or a shot's tint/saturation is far from the rest of the video | "alien to the rest of footage", "color change when the camera changes" |
+
+Pixels are converted to RGB using the video's own color tags; untagged HD video is read as BT.709 and limited range, as players do. **HDR (PQ, HLG) and BT.2020 videos are not measured**, because every threshold assumes SDR Rec.709; the report says so. Measuring takes about 30 s per minute of 1080p video.
+
+Faces are found with OpenCV's YuNet model (232 KB, downloaded once into `models/`, checksum checked).
+All thresholds are in the `color:` block of `config.yaml`. These are measurements, not taste: a
+deliberate look (a grey, desaturated sequence) gets flagged too, so a client with such a style
+switches the matching flag off in its client file:
+
+```yaml
+color:
+  skip: ["saturation"]
+```
+
+Test video with planted grading mistakes (one per shot, made with ffmpeg filters from any
+well-graded video with a face):
+
+```
+python scripts/make_color_samples.py --source path/to/well_graded.mp4
+python -m pytest --run-slow tests/test_color.py
+```
 
 ## Project layout
 

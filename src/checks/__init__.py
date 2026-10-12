@@ -5,7 +5,7 @@ settings is the check's block from config.yaml with the client's overrides appli
 context (src/checks/context.py) carries the glossary and the dictionary.
 """
 
-from src.checks import capitalization, punctuation, spacing, spelling, too_short, transcript
+from src.checks import capitalization, punctuation, screen_text, spacing, spelling, too_short, transcript
 
 CHECKS = {
     "too_short": too_short.check,
@@ -14,4 +14,5 @@ CHECKS = {
     "spacing": spacing.check,
     "punctuation": punctuation.check,   # Anthropic API; skipped (with a warning) without ANTHROPIC_API_KEY
     "transcript": transcript.check,     # caption vs audio; runs only when a video is given (--video)
+    "screen_text": screen_text.check,   # caption names vs logos and titles in the video (--video)
 }

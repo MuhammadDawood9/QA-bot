@@ -271,7 +271,8 @@ def test_missing_video(tmp_path):
 def test_cli_with_video(monkeypatch, capsys, tmp_path):
     srt = tmp_path / "c.srt"
     srt.write_text("1\n00:00:00,000 --> 00:00:02,000\nAre you just want to rest\n", encoding="utf-8")
-    monkeypatch.setattr("src.main.get_transcript", lambda *a, **k: said("Or you just want to rest", 0.1))
+    monkeypatch.setattr("src.engine.get_transcript", lambda *a, **k: said("Or you just want to rest", 0.1))
+    (tmp_path / "v.mp4").write_bytes(b"fake video")
     assert main(["--srt", str(srt), "--video", str(tmp_path / "v.mp4"), "--no-llm"]) == 0
     out = capsys.readouterr().out
     assert "wrong_word" in out and 'audio sounds like "Or you"' in out
@@ -280,4 +281,4 @@ def test_cli_with_video(monkeypatch, capsys, tmp_path):
 def test_cli_reports_a_missing_video(capsys, tmp_path):
     assert main(["--srt", str(FIXTURES / "sample_mistakes.srt"), "--video", str(tmp_path / "nope.mp4"),
                  "--no-llm"]) == 2
-    assert "video not found" in capsys.readouterr().err
+    assert "video not found" in capsys.readouterr().err.lower()

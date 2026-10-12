@@ -268,12 +268,12 @@ def test_cli_reads_captions_from_the_video_without_an_srt(tmp_path, monkeypatch,
             Caption(2, 2.1, 4.0, "good helth habits", source="ocr", ocr_confidence=0.6)]
     seen = {}
 
-    def fake_read(path, settings, cache_dir):
+    def fake_read(path, settings, cache_dir, **kwargs):
         seen["path"], seen["settings"] = path, settings
         return caps
 
-    monkeypatch.setattr(cli, "read_burned_in_captions", fake_read)
-    monkeypatch.setattr(cli, "get_transcript", lambda *a, **kw: [])      # no Whisper on the fake video
+    monkeypatch.setattr("src.engine.read_burned_in_captions", fake_read)
+    monkeypatch.setattr("src.engine.get_transcript", lambda *a, **kw: [])      # no Whisper on the fake video
     saved = tmp_path / "out.srt"
     code = cli.main(["--video", str(video), "--no-llm", "--save-srt", str(saved)])
     out = capsys.readouterr().out
@@ -292,7 +292,7 @@ def test_cli_needs_a_video_or_an_srt(capsys):
 
 def test_cli_reports_an_unreadable_video(tmp_path, capsys):
     assert cli.main(["--video", str(tmp_path / "missing.mp4"), "--no-llm"]) == 2
-    assert "video not found" in capsys.readouterr().err
+    assert "video not found" in capsys.readouterr().err.lower()
 
 
 # --- the real OCR on the test videos ---------------------------------------------------------

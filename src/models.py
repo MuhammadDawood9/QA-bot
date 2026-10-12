@@ -21,6 +21,35 @@ WRONG_WORD = "wrong_word"
 MISSING_WORD = "missing_word"
 EXTRA_WORD = "extra_word"
 CAPTION_EARLY = "caption_early"
+CAPTION_LATE = "caption_late"
+CAPTION_SYNC = "caption_sync"                # all captions shifted by the same amount (one issue per video)
+UNCAPTIONED_SPEECH = "uncaptioned_speech"    # caption_id is negative: there is no caption
+# On-screen graphics (logos, name titles) compared with the captions
+SCREEN_TEXT_MISMATCH = "screen_text_mismatch"
+# Color grading, per shot (src/video/color.py)
+OVEREXPOSED = "overexposed"
+UNDEREXPOSED = "underexposed"
+CRUSHED_BLACKS = "crushed_blacks"
+FLAT_CONTRAST = "flat_contrast"
+SATURATION = "saturation"
+COLOR_CAST = "color_cast"
+SKIN_TONE = "skin_tone"
+SHOT_MISMATCH = "shot_mismatch"
+COLOR_ISSUES = {OVEREXPOSED, UNDEREXPOSED, CRUSHED_BLACKS, FLAT_CONTRAST, SATURATION, COLOR_CAST, SKIN_TONE,
+                SHOT_MISMATCH}
+
+# Issues that aren't about a caption have negative caption ids: -1, -2... for speech with no
+# caption, and -1001, -1002... for shot 1, 2... of the color checks.
+SHOT_ID_BASE = 1000
+
+
+def shot_issue_id(shot_number: int) -> int:
+    return -(SHOT_ID_BASE + shot_number)
+
+
+def shot_number(caption_id: int) -> int | None:
+    """The shot number for a color issue's id, None for any other id."""
+    return -caption_id - SHOT_ID_BASE if caption_id <= -SHOT_ID_BASE else None
 
 SEVERITIES = ("high", "medium", "low")
 

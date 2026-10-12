@@ -169,14 +169,16 @@ def test_grab_frame_failure_is_not_fatal(monkeypatch, tmp_path):
 
 def test_cli_report_flag(monkeypatch, tmp_path, capsys):
     config = {**CONFIG, "report": {**CONFIG["report"], "output_dir": str(tmp_path / "out")}}
-    monkeypatch.setattr("src.main.load_config", lambda path=None: config)
+    monkeypatch.setattr("src.engine.load_config", lambda path=None: config)
     assert main(["--srt", str(FIXTURES / "sample_mistakes.srt"), "--client", "E8D", "--report"]) == 0
     err = capsys.readouterr().err
     [folder] = (tmp_path / "out").iterdir()
     text = (folder / "report.md").read_text(encoding="utf-8")
-    assert f"report: {folder / 'report.md'}" in err and f"report: {folder / 'report.docx'}" in err
+    docx = next(folder.glob('*.docx'))
+    assert docx.name.startswith('sample_mistakes_QC_') and docx.name.endswith('.docx')
+    assert f"report: {folder / 'report.md'}" in err and f"report: {docx}" in err
     assert "# QC report: sample_mistakes.srt" in text and "- **Client:** E8D" in text
-    assert "  - Captions vs audio (Whisper): not run (no --video)" in text
+    assert "  - Captions vs audio (Whisper): not run (no video)" in text
     assert "  - Punctuation (Anthropic API): skipped (no API key)" in text
 
 

@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
 
-from src.models import SEVERITIES, Caption, Issue
+from src.models import SEVERITIES, Caption, Issue, shot_number
 from src.report.screenshots import grab_frame
 from src.utils.timecode import format_timestamp
 
@@ -34,6 +34,18 @@ LABELS = {
     "missing_word": "Missing word (audio)",
     "extra_word": "Extra word (audio)",
     "caption_early": "Caption early (audio)",
+    "caption_late": "Caption late (audio)",
+    "caption_sync": "Captions out of sync (audio)",
+    "uncaptioned_speech": "Speech with no caption",
+    "screen_text_mismatch": "Differs from on-screen text",
+    "overexposed": "Overexposed (color)",
+    "underexposed": "Too dark (color)",
+    "crushed_blacks": "Crushed blacks (color)",
+    "flat_contrast": "Flat contrast (color)",
+    "saturation": "Saturation (color)",
+    "color_cast": "Color cast (color)",
+    "skin_tone": "Skin tone (color)",
+    "shot_mismatch": "Shot doesn't match (color)",
 }
 _RANK = {s: i for i, s in enumerate(SEVERITIES)}          # high = 0 (worst)
 CSV_COLUMNS = ["timestamp", "seconds", "caption_id", "type", "severity", "caption", "problem",
@@ -52,6 +64,21 @@ class ReportInfo:
 
 def captions_source(info: "ReportInfo") -> str:
     return info.srt.name if info.srt is not None else "read from the video (OCR)"
+
+
+def caption_title(cid: int) -> str:
+    """Issues not tied to a caption have negative ids: speech with no caption, or a shot (color)."""
+    if cid > 0:
+        return f"caption #{cid}"
+    shot = shot_number(cid)
+    return f"shot {shot}" if shot is not None else "no caption"
+
+
+def caption_anchor(cid: int) -> str:
+    if cid > 0:
+        return f"caption-{cid}"
+    shot = shot_number(cid)
+    return f"shot-{shot}" if shot is not None else f"no-caption-{-cid}"
 
 
 def label(issue_type: str) -> str:
@@ -216,7 +243,8 @@ def _index(flagged, by_caption, caps) -> list[str]:
         problems = ", ".join(dict.fromkeys(label(i.type) for i in group))
         text = caps[cid].flat_text if cid in caps else group[0].original
         short = text if len(text) <= 60 else text[:57] + "..."
-        lines.append(f"| [{format_timestamp(group[0].timestamp)}](#caption-{cid}) | #{cid} {md(short)} | "
+        number = f"#{cid} " if cid > 0 else ""
+        lines.append(f"| [{format_timestamp(group[0].timestamp)}](#{caption_anchor(cid)}) | {number}{md(short)} | "
                      f"{md(problems)} | {worst(group)} |")
     return lines + [""]
 
@@ -230,7 +258,8 @@ def _details(flagged, by_caption, caps, shots, info, wanted_shots) -> list[str]:
         cap = caps.get(cid)
         when = (f"{format_timestamp(cap.start)} - {format_timestamp(cap.end)}" if cap
                 else format_timestamp(group[0].timestamp))
-        lines += [f'<a id="caption-{cid}"></a>', "", f"### {format_timestamp(group[0].timestamp)}, caption #{cid}", ""]
+        lines += [f'<a id="{caption_anchor(cid)}"></a>', "",
+                  f"### {format_timestamp(group[0].timestamp)}, {caption_title(cid)}", ""]
         lines.append(f"On screen {when}")
         lines.append("")
         lines.append(f"> {md(cap.flat_text if cap else group[0].original)}")

@@ -219,6 +219,8 @@ def check(captions: Sequence[Caption], settings: dict, context: CheckContext | N
 
     per_request = max(1, int(settings.get("windows_per_request", 10)))
     for start in range(0, len(todo), per_request):
+        if context.progress is not None:
+            context.progress(start / len(todo))          # API calls are slow: report, and allow a cancel
         batch = todo[start:start + per_request]
         user = "CAPTIONS:\n\n" + "\n\n".join(w.render(n) for n, w in enumerate(batch, start=1))
         expected = {w.target.id for w in batch}

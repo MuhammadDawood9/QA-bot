@@ -452,11 +452,15 @@ The report document, color checks, OCR, the ClickUp API and any UI are on hold u
 | 3. Punctuation via Anthropic API | Windowed prompts (Section 7.4), JSON-only output, confidence threshold, caching, batching, key from `ANTHROPIC_API_KEY` | **Done (2026-10-12)**, tested with a fake API only; first live run pending |
 | 4. Whisper transcript vs captions | faster-whisper (CPU, int8), cached transcripts, glossary as initial_prompt, alignment, wrong/missing/extra/early-word flags | **Done (2026-10-12)**, tested on a synthetic sample video; real-video run pending |
 | Report (Milestone 3) | Report with screenshots, summary, appendix; CSV export | **Done (2026-10-12)**: Word (.docx) + Markdown + CSV; PDF not built |
+| Burned-in captions (Milestone 5) | OCR of the picture, per-client region, word-by-word grouping | **Done (2026-10-12)**, tested on synthetic videos and one real video |
+| Sync, uncaptioned speech, names vs graphics | New caption checks found on the first real video | **Done (2026-10-12)** |
+| Color grading (Milestone 7) | Per-shot measurements and flags from the 166 color notes | **Done (2026-10-12)**, thresholds not yet evaluated on real notes |
+| Desktop companion app | Steps 1-4 (see below) | **Step 1 done (2026-10-12)**; Step 2 next |
 
 ### Machines
 - Develop on Windows (Lenovo ThinkPad), run on a MacBook (specs to come). All code is cross-platform: pathlib everywhere,
   UTF-8 for every text file, ffmpeg found with `shutil.which` and called with argument lists, no PyTorch.
-- Machine-specific settings live in the `machine:` block of `config.yaml` (Whisper model size, cpu_threads, Tesseract path).
+- Machine-specific settings live in the `machine:` block of `config.yaml` (Whisper model size, cpu_threads, ffmpeg path).
 
 ### Decisions made in Phase 1
 - **Python 3.12**, virtual environment in `.venv/`. Versions are pinned in `requirements.txt`.
@@ -609,7 +613,74 @@ The report document, color checks, OCR, the ClickUp API and any UI are on hold u
   Windows paths need no escaping; falls back to a plain picture if the filter is missing), so its screenshots show the
   caption the issue is about, and it is ready as OCR test material later.
 
+### Decisions made for burned-in captions (Milestone 5, 2026-10-12)
+- **Videos come with captions burned in and no SRT**, so reading them off the picture is the main input path. `--srt` stays
+  for the rare file that has one.
+- **OCR: RapidOCR (`rapidocr_onnxruntime` 1.4.4)**: PaddleOCR models on the onnxruntime already pinned for Whisper; the
+  models ship inside the wheel, so nothing downloads at run time. Pulls in opencv-python, Pillow, pyclipper, shapely.
+  **Tesseract is not used.** (The desktop-app spec mentions detecting Tesseract on startup; with RapidOCR there is nothing
+  to detect, only ffmpeg.)
+- **Frames from PyAV** (already installed for Whisper), 5 a second, cropped to the client's caption region (`ocr:` block in
+  `clients/<CODE>.yaml`; default the whole frame). The OCR only runs when a tile of the region changed.
+- **Grouping:** text that grows word by word is one caption; a highlighted key word in its own box joins its line; titles
+  are tracked separately; the caption's text is the reading most frames agree on, which also gives an OCR confidence.
+  Text on screen longer than 12 s is a logo or title, not a caption.
+- **OCR doubt:** text issues on captions the OCR read unsurely, and spacing/punctuation issues on any OCR caption (its known
+  weak spots), are made low severity with a note to check the screenshot.
+
+### Decisions made for the checks added after the first real video (2026-10-12)
+- **Whole-video sync** (`caption_sync`): the captions are tried at shifts up to ±5 s; a clearly better shift is reported once
+  and the word comparison runs on the shifted captions. **Late captions** (`caption_late`) next to early ones.
+- **Speech with no caption** (`uncaptioned_speech`): 1.5 s and 4 words or more of clearly heard speech no caption covers.
+  Such issues have negative caption ids (-1, -2...) and show as "no caption" in the report.
+- **Names vs on-screen graphics** (`screen_text_mismatch`): the whole frame is read every 2 s for logos and titles; a
+  capitalized caption word within 2 letters of a rare word on screen is flagged ("Meyer" under a "MAIER" logo).
+
+### Decisions made for color grading (Milestone 7, 2026-10-12)
+- Built from the 166 color notes in the QC spreadsheet. Shots are found by color-histogram cuts (no PySceneDetect); each
+  shot is measured 4 times a second at 480 px wide, without the caption region, and flagged for: overexposed, underexposed,
+  crushed blacks, flat contrast, saturation, color cast (tint of near-neutral pixels, or the brightest unclipped ones when
+  the cast is strong), skin tone (faces found with OpenCV's YuNet model, 232 KB, downloaded once with a checksum), and shots
+  that don't match (skin hue jumps between face shots, tint or saturation far from the video's typical shot). Black screens
+  are skipped. A client with a deliberate look switches a type off with `color: {skip: [...]}`.
+- **Color space:** frames are converted using their own tags. Untagged frames get what players assume: BT.709 for HD
+  (wider than 1279 or taller than 576 px), BT.601 for SD, limited range unless tagged full. (libav's default would read
+  every untagged frame as BT.601; for HD that bends skin hues a few degrees.) **HDR (PQ, HLG) and BT.2020 footage is not
+  measured**: every threshold assumes SDR Rec.709, so such a video gets a "color skipped" note instead of wrong numbers.
+- **Cost (measured):** about 30 s of analysis per minute of 1080p video at 4 samples a second on the i7-8650U: ~10 s
+  decoding, ~105 ms per sampled frame for the measurements (mostly percentiles over 400k pixels), ~35 ms per face check.
+- **Thresholds are untuned** beyond a test video with planted mistakes (all 6 found, 0 false alarms; `del.mp4`: 0 flags).
+  `scripts/evaluate.py` measures them against real notes (below) before anything is changed.
+
+### Decisions made for the desktop companion app (2026-10-12)
+Steps, stopping after each for testing: 1 engine entry point + report, 2 floating mascot window, 3 interactions,
+4 polish and packaging (only on "go step 4"). Not built: live screen capture, a dashboard window, cloud features.
+Windows 10/11 and macOS (Intel, also Apple Silicon); OS-specific code only in `src/platform/` behind one interface.
+- **Step 1 (done):** `src/engine.py` holds the whole pipeline. `run_qc(video_path, client, progress_cb=None,
+  cancel_event=None, *, options=None, config=None)` returns the issue list (a `QCResult`, which is a list with the captions,
+  client, context and check summary attached). `progress_cb(stage, fraction)` gets the **overall** fraction 0..1; stages:
+  Reading captions, Reading on-screen text, Transcribing audio, Checking captions, Checking color. `cancel_event`
+  (a `threading.Event`) is checked at every frame, Whisper segment and API batch, and raises `Cancelled`. Bad input raises
+  `QCError` with a message for the user. The CLI is now a thin wrapper around `run_qc`.
+- **The engine no longer prints.** Progress goes through the callback, messages through the `qcbot` loggers; the CLI
+  prints both. This keeps the engine UI-independent.
+- **Word report reworked to the spec:** landscape A4, header, summary of counts per issue type and severity, then one
+  table with a row per issue: time, screenshot, original text, what's wrong, suggested fix, confidence; appendix of all
+  captions. Saved as `reports/<video>_<date-time>/<video>_QC_<date>.docx`; `build_docx_report(result)` returns the path.
+  (The per-caption sections and links of the first Word version are gone; Markdown and CSV are unchanged.)
+- `guess_client(video, known)` finds a client code in a file name ("E8D_reel.mp4", "8d - reel.mov") for Step 3.
+
+### Evaluation of the color checks (2026-10-12)
+- `scripts/evaluate.py` reads `data/ground_truth.csv` (video, timestamp, client, issue_type, note_text);
+  `--make-template` drafts it from the spreadsheet's 166 color notes with a guessed issue type. A flag matches a note
+  inside its shot ±2 s. Per type: recall, precision, false alarms per minute, and lists of misses, false alarms and
+  "right moment, different type" flags. A `color_grading` note (no specific problem) is matched by any color flag.
+- **Not run on real videos yet:** the notes' videos aren't on this machine. Results so far are only the planted test video.
+
 ### Open questions
+- Fill `data/ground_truth.csv` and put the matching videos (mostly E3AC weddings) where the evaluation can find them.
+- The desktop-app spec asks to detect Tesseract; the bot uses RapidOCR (pip, no separate install). Drop that
+  requirement, or is Tesseract wanted for something else?
 - Is a PDF version also wanted? (Word can save the .docx as PDF in the meantime.)
 - Run on a real client video and its SRT (realistic voices, music, several speakers).
 - First live run of the punctuation check: confirm the cost and quality on a real caption file.

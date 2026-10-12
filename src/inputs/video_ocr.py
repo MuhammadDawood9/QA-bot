@@ -19,20 +19,23 @@ from __future__ import annotations
 import json
 import logging
 import re
-import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Iterator, Sequence
 
-from src.inputs.caption_builder import Reading, TextBox, build_captions, group_boxes
+from rapidfuzz import fuzz
+
+from src.inputs.caption_builder import Reading, TextBox, build_captions, group_boxes, normalize
 from src.models import Caption
 from src.utils.cache import text_hash
+from src.utils.progress import Stage, silent
 from src.utils.system import file_sha256
 
 log = logging.getLogger("qcbot.ocr")
 
 # Bump when the reading or grouping logic changes, so old cached captions aren't reused.
-OCR_VERSION = "1"
+OCR_VERSION = "2"
 
 # image (H x W x 3, RGB, uint8) -> text boxes with positions in pixels of that image
 OcrEngine = Callable[[object], list[TextBox]]
@@ -168,6 +171,25 @@ def rapidocr_engine(settings: dict) -> OcrEngine:
     return read
 
 
+# libav's codes for the color tags of a frame
+_UNSPECIFIED_COLORSPACE = 2
+_FULL_RANGE = 2
+
+
+def frame_to_rgb(frame):
+    """Full-range RGB (0-255) from a decoded frame, using the frame's own color tags.
+
+    Tagged frames are converted by the matrix and range they carry. Untagged ones (common in
+    edited exports) get what players assume: BT.709 for HD (wider than 1279 or taller than 576
+    pixels), BT.601 for SD, and limited (16-235) range unless tagged full range. The plain libav
+    default would use BT.601 for every untagged frame, which bends HD skin tones a few degrees."""
+    if frame.colorspace == _UNSPECIFIED_COLORSPACE and (frame.width >= 1280 or frame.height > 576):
+        return frame.reformat(format="rgb24", src_colorspace="ITU709",
+                              src_color_range="JPEG" if frame.color_range == _FULL_RANGE else "MPEG",
+                              dst_color_range="JPEG").to_ndarray()
+    return frame.to_ndarray(format="rgb24")
+
+
 def sample_frames(video: Path, fps: float) -> Iterator[tuple[float, float, object]]:
     """(time, video duration, RGB frame) about `fps` times per second, in order. The rotation a
     phone stores in the file is applied, so vertical videos come out upright."""
@@ -190,7 +212,7 @@ def sample_frames(video: Path, fps: float) -> Iterator[tuple[float, float, objec
             t = frame.time
             if t is None or t + 1e-6 < next_t:
                 continue
-            image = frame.to_ndarray(format="rgb24")
+            image = frame_to_rgb(frame)
             rotation = int(getattr(frame, "rotation", 0) or 0) % 360
             if rotation:
                 image = np.ascontiguousarray(np.rot90(image, k=rotation // 90))
@@ -226,8 +248,10 @@ def _load(path: Path) -> list[Caption] | None:
 
 
 def read_frames(video: Path, settings: dict, engine: OcrEngine,
-                frames: Iterator[tuple[float, float, object]] | None = None) -> list[Caption]:
+                frames: Iterator[tuple[float, float, object]] | None = None,
+                progress: Stage | None = None) -> list[Caption]:
     """The OCR pass itself (no cache): frames -> readings -> captions."""
+    progress = progress or silent()
     fps = float(settings.get("sample_fps", 5))
     region = parse_region(settings.get("region", "full"))
     keep = ReadingFilter(settings)
@@ -236,8 +260,9 @@ def read_frames(video: Path, settings: dict, engine: OcrEngine,
 
     readings_by_frame: list[tuple[float, list[Reading]]] = []
     last_thumb, last_readings = None, []
-    ocr_runs, started, next_report = 0, time.monotonic(), 0.1
+    ocr_runs = 0
     for t, duration, image in frames:
+        progress(t / duration if duration else 0.0)
         part = crop(image, region)
         thumb = thumbnail(part)
         if changed(thumb, last_thumb, threshold):
@@ -245,16 +270,76 @@ def read_frames(video: Path, settings: dict, engine: OcrEngine,
             last_readings, last_thumb = keep(boxes), thumb
             ocr_runs += 1
         readings_by_frame.append((t, last_readings))
-        if duration and t / duration >= next_report:
-            print(f"  read {t / duration:.0%} of the video ({time.monotonic() - started:.0f} s so far)",
-                  file=sys.stderr)
-            next_report = t / duration + 0.1
     log.info("OCR ran on %d of %d frames", ocr_runs, len(readings_by_frame))
-    return build_captions(readings_by_frame, 1.0 / fps, settings)
+    return drop_long_text(build_captions(readings_by_frame, 1.0 / fps, settings), settings)
+
+
+def drop_long_text(captions: list[Caption], settings: dict) -> list[Caption]:
+    """Text on screen longer than max_caption_sec is a logo or title, not a caption (it is still
+    read by the on-screen text pass). Captions are renumbered."""
+    limit = float(settings.get("max_caption_sec", 12.0))
+    if limit <= 0:
+        return captions
+    kept = [c for c in captions if c.duration <= limit]
+    for c in captions:
+        if c.duration > limit:
+            log.info("not a caption (on screen %.0f s): %s", c.duration, c.flat_text)
+    return [replace(c, id=n) for n, c in enumerate(kept, start=1)]
+
+
+def read_screen_text(video: Path, settings: dict, captions: Sequence[Caption], cache_dir: Path | None = None,
+                     engine: OcrEngine | None = None,
+                     frames: Iterator[tuple[float, float, object]] | None = None,
+                     progress: Stage | None = None) -> list[str]:
+    """On-screen text that isn't a caption (logos, name titles, graphics): the whole frame read
+    every screen_text_every_sec seconds, minus anything in the caption region and anything that
+    is one of the captions. Each different text once, in order of first appearance."""
+    every = float(settings.get("screen_text_every_sec", 2.0))
+    if every <= 0:
+        return []
+    progress = progress or silent()
+    video = Path(video)
+    cache_file = None
+    if cache_dir is not None and frames is None:
+        captions_key = text_hash(*(c.flat_text for c in captions))[:6]     # captions are left out of it
+        cache_file = (Path(cache_dir)
+                      / f"{file_sha256(video)[:16]}-{ocr_settings_key(settings)}-screen-{captions_key}.json")
+        if cache_file.is_file():
+            try:
+                with cache_file.open(encoding="utf-8") as f:
+                    return list(json.load(f)["screen_text"])
+            except (OSError, ValueError, KeyError, TypeError):
+                log.warning("cached on-screen text %s is unreadable; reading again", cache_file.name)
+
+    region = parse_region(settings.get("region", "full"))
+    caption_region = None if region == FULL_FRAME else region
+    keep = ReadingFilter(settings)
+    engine = engine or rapidocr_engine(settings)
+    caption_texts = [normalize(c.flat_text) for c in captions]
+    frames = frames if frames is not None else sample_frames(video, 1.0 / every)
+
+    found: dict[str, str] = {}
+    for t, duration, image in frames:
+        progress(t / duration if duration else 0.0)
+        h, w = image.shape[:2]
+        boxes = [TextBox(b.text, b.score, b.left / w, b.top / h, b.right / w, b.bottom / h) for b in engine(image)]
+        if caption_region is not None:
+            boxes = [b for b in boxes if not _inside(b, caption_region)]
+        for r in keep(boxes):
+            n = normalize(r.flat)
+            key = n.replace(" ", "")              # the OCR may read the same logo with or without a space
+            if n and key not in found and not any(n in c or fuzz.ratio(n, c) >= 90 for c in caption_texts):
+                found[key] = r.flat
+    texts = list(found.values())
+    if cache_file is not None:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        with cache_file.open("w", encoding="utf-8", newline="\n") as f:
+            json.dump({"video": video.name, "screen_text": texts}, f, ensure_ascii=False, indent=1)
+    return texts
 
 
 def read_burned_in_captions(video: Path, settings: dict, cache_dir: Path | None = None,
-                            engine: OcrEngine | None = None) -> list[Caption]:
+                            engine: OcrEngine | None = None, progress: Stage | None = None) -> list[Caption]:
     """Captions burned into the video, from the cache if this exact video and settings were done."""
     video = Path(video)
     if not video.is_file():
@@ -266,13 +351,13 @@ def read_burned_in_captions(video: Path, settings: dict, cache_dir: Path | None 
         if cache_file.is_file():
             captions = _load(cache_file)
             if captions is not None:
-                print(f"captions: read from the video earlier, from cache ({cache_file.name})", file=sys.stderr)
+                log.info("captions: read from the video earlier, from cache (%s)", cache_file.name)
                 return captions
 
-    print(f"reading the captions burned into {video.name} (OCR on the CPU)...", file=sys.stderr)
+    log.info("reading the captions burned into %s (OCR on the CPU)...", video.name)
     started = time.monotonic()
-    captions = read_frames(video, settings, engine or rapidocr_engine(settings))
-    print(f"captions: {len(captions)} read from the video in {time.monotonic() - started:.0f} s", file=sys.stderr)
+    captions = read_frames(video, settings, engine or rapidocr_engine(settings), progress=progress)
+    log.info("captions: %d read from the video in %.0f s", len(captions), time.monotonic() - started)
     if cache_file is not None:
         _save(cache_file, video, settings, captions)
     return captions

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 import tempfile
 import time
 import wave
@@ -20,6 +19,7 @@ from typing import Callable, Sequence
 
 from src.models import SpokenWord
 from src.utils.cache import text_hash
+from src.utils.progress import Stage, silent
 from src.utils.system import extract_audio, file_sha256, find_ffmpeg
 
 log = logging.getLogger("qcbot.transcribe")
@@ -75,12 +75,14 @@ def _load_model(ws: dict, models_dir: Path | None):
     try:
         return WhisperModel(ws["model_size"], local_files_only=True, **kwargs)   # no network once downloaded
     except Exception:
-        print(f"downloading Whisper model '{ws['model_size']}' (once; base is about 145 MB, small about 465 MB)...",
-              file=sys.stderr)
+        log.info("downloading Whisper model '%s' (once; base is about 145 MB, small about 465 MB)...",
+                 ws["model_size"])
         return WhisperModel(ws["model_size"], **kwargs)
 
 
-def faster_whisper_transcriber(models_dir: Path | None = None) -> Transcriber:
+def faster_whisper_transcriber(models_dir: Path | None = None, progress: Stage | None = None) -> Transcriber:
+    progress = progress or silent()
+
     def transcribe(wav: Path, ws: dict, prompt: str) -> list[SpokenWord]:
         model = _load_model(ws, models_dir)
         segments, info = model.transcribe(
@@ -89,16 +91,11 @@ def faster_whisper_transcriber(models_dir: Path | None = None) -> Transcriber:
         )
         words: list[SpokenWord] = []
         duration = info.duration or 0.0
-        next_report = 0.1
-        started = time.monotonic()
         for segment in segments:                  # a generator: transcription happens while iterating
             for w in segment.words or []:
                 words.append(SpokenWord(text=w.word.strip(), start=float(w.start), end=float(w.end),
                                         probability=float(w.probability)))
-            if duration and segment.end / duration >= next_report:
-                print(f"  transcribed {segment.end / duration:.0%} ({time.monotonic() - started:.0f} s so far)",
-                      file=sys.stderr)
-                next_report = segment.end / duration + 0.1
+            progress(segment.end / duration if duration else 0.0)    # also where a cancel takes effect
         return words
     return transcribe
 
@@ -125,7 +122,7 @@ def _load(path: Path) -> list[SpokenWord] | None:
 
 def get_transcript(video: Path, machine: dict, settings: dict, glossary_terms: Sequence[str],
                    cache_dir: Path, models_dir: Path | None = None,
-                   transcriber: Transcriber | None = None) -> list[SpokenWord]:
+                   transcriber: Transcriber | None = None, progress: Stage | None = None) -> list[SpokenWord]:
     """The words spoken in the video, from the cache if this exact video was done before."""
     video = Path(video)
     if not video.is_file():
@@ -140,16 +137,16 @@ def get_transcript(video: Path, machine: dict, settings: dict, glossary_terms: S
     if cache_file.is_file():
         words = _load(cache_file)
         if words is not None:
-            print(f"transcript: from cache ({cache_file.name})", file=sys.stderr)
+            log.info("transcript: from cache (%s)", cache_file.name)
             return words
 
     ffmpeg = find_ffmpeg(machine.get("ffmpeg_path"))
-    transcriber = transcriber or faster_whisper_transcriber(models_dir)
+    transcriber = transcriber or faster_whisper_transcriber(models_dir, progress)
     with tempfile.TemporaryDirectory(prefix="qcbot-") as tmp:
         wav = extract_audio(video, Path(tmp) / "audio.wav", ffmpeg)
-        print(f"transcribing {video.name} with Whisper '{ws['model_size']}' on the CPU...", file=sys.stderr)
+        log.info("transcribing %s with Whisper '%s' on the CPU...", video.name, ws["model_size"])
         started = time.monotonic()
         words = transcriber(wav, ws, prompt)
-    print(f"transcript: {len(words)} words in {time.monotonic() - started:.0f} s", file=sys.stderr)
+    log.info("transcript: %d words in %.0f s", len(words), time.monotonic() - started)
     _save(cache_file, video, digest, ws, prompt, words)
     return words
