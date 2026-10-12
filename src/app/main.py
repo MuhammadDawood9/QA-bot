@@ -21,7 +21,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QGuiApplication
 from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QSystemTrayIcon
 
-from src.app.assets import assets_dir
+from src.app.assets import assets_dir, available_skins, load_skin
 from src.app.choices import CHECK_TOGGLES, choose_client, file_dialog_filter, qc_options
 from src.app.dialogs import SettingsDialog, open_path, show_error
 from src.app.mascot import MascotWindow
@@ -111,6 +111,20 @@ class CompanionApp:
             action.setChecked(code == current)
             action.setActionGroup(group)
             action.triggered.connect(lambda _=False, c=code: self.settings.set("last_client", c))
+
+        skins = menu.addMenu("Skin")
+        skin_group = QActionGroup(skins)
+        for key in available_skins():
+            action = skins.addAction(load_skin(key).name)
+            action.setCheckable(True)
+            action.setChecked(key == self.mascot.skin.key)
+            action.setActionGroup(skin_group)
+            action.triggered.connect(lambda _=False, k=key: self.mascot.set_skin(k))
+        skins.addSeparator()
+        idle_blink = skins.addAction("Blink while idle")
+        idle_blink.setCheckable(True)
+        idle_blink.setChecked(self.mascot.idle_blink)
+        idle_blink.toggled.connect(self.mascot.set_idle_blink)
 
         checks = menu.addMenu("Checks")
         disabled = set(self.settings.get("disabled_checks") or [])
@@ -324,7 +338,9 @@ def selftest() -> int:
     config = load_config()
     checks = [("config", Path(config["_root"]) / "config.yaml"), ("rules", resolve_path(config, "rules_file")),
               ("clients", resolve_path(config, "clients_dir")), ("glossary", resolve_path(config, "glossary_file"))]
-    checks += [(f"mascot {s}", assets_dir() / "mascot" / f"{s}.png") for s in STATES]
+    skins = available_skins()
+    checks += [("mascot skins", assets_dir() / "mascot" / (skins[0] if skins else "(none)"))]
+    checks += [(f"skin {k} {s}", assets_dir() / "mascot" / k / f"{s}.png") for k in skins for s in STATES]
     for name, path in checks:
         found = path.exists()
         problems += not found

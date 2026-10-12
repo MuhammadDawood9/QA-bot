@@ -182,7 +182,7 @@ def test_only_one_check_at_a_time(app, fake):
 def drop(widget, paths):
     mime = QMimeData()
     mime.setUrls([QUrl.fromLocalFile(str(p)) for p in paths])
-    event = QDropEvent(QPointF(60, 60), Qt.DropAction.CopyAction, mime, Qt.MouseButton.LeftButton,
+    event = QDropEvent(QPointF(88, 88), Qt.DropAction.CopyAction, mime, Qt.MouseButton.LeftButton,
                        Qt.KeyboardModifier.NoModifier)
     widget.dropEvent(event)            # Qt only routes a drop after a real drag has entered the window
 
@@ -205,10 +205,10 @@ def test_click_without_drag_emits_clicked(app, settings):
     mascot.show()
     clicks = []
     mascot.clicked.connect(lambda: clicks.append(1))
-    where = QPointF(mascot.mapToGlobal(QPoint(60, 60)))
+    where = QPointF(mascot.mapToGlobal(QPoint(88, 88)))
     for kind, buttons in ((QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton),
                           (QEvent.Type.MouseButtonRelease, Qt.MouseButton.NoButton)):
-        QApplication.sendEvent(mascot, QMouseEvent(kind, QPointF(60, 60), where, Qt.MouseButton.LeftButton, buttons,
+        QApplication.sendEvent(mascot, QMouseEvent(kind, QPointF(88, 88), where, Qt.MouseButton.LeftButton, buttons,
                                                    Qt.KeyboardModifier.NoModifier))
     assert clicks == [1]
     mascot.hide()

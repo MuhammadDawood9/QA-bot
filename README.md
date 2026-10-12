@@ -158,7 +158,12 @@ python -m src.app --demo     # also a menu to preview the four mascot states
 **Using it**
 - **Drop a video** (mp4, mov, m4v, mkv, avi, mxf, webm) from Explorer or Finder onto the mascot; a blue
   dashed outline shows it will be accepted. Or **click** the mascot to pick a file.
-- While it works, the face bobs gently and a blue ring shows progress; hover for the stage and percentage.
+- While it works, a blue-violet glow pulses behind it and a blue ring shows progress; hover for the stage
+  and percentage. Done: a green glow that fades out. Error: a steady red glow. Idle: no glow.
+- Hover over it and it blinks, then again every 3 s while the cursor stays. *Skin → Blink while idle* adds a
+  random blink every 5-10 s.
+- Only the mascot's own shape reacts (hover, click, drag, drop). Around it the window doesn't exist: clicks go to
+  whatever is underneath, on Windows and macOS alike.
   You can keep working: the check runs in the background.
 - **When it's done** the face is happy with a red badge (the number of issues), a desktop notification
   appears, and the report opens in Word. If the check fails, the face shows X eyes and a message explains
@@ -184,10 +189,16 @@ python -m src.app --demo     # also a menu to preview the four mascot states
 - **States:** idle, working, done (with a red badge showing the number of issues, "99+" over 99) and error.
 - **Tray / menu bar icon** with *Show mascot* and *Quit*. Right-clicking the mascot also offers *Quit*,
   so the app can always be closed even where there is no tray.
-- **Your own mascot images:** replace the PNGs in `assets/mascot/` (`idle.png`, `working.png`, `done.png`,
-  `error.png`, each 120 x 120 with a transparent background) and add `@2x` versions at 240 x 240
-  (`idle@2x.png` ...) so they're sharp on Retina and high-DPI screens. To redraw the placeholders:
-  `python scripts/make_mascot_placeholders.py --force`.
+- **Skins** (right-click → *Skin*; the choice is remembered): *Inspector*, *Cloud* and *Robot* are placeholders.
+  A skin is a folder `assets/mascot/<name>/` with `idle.png`, `working.png`, `done.png`, `error.png` (120 x 120,
+  transparent background, **no glow**: the app draws it), `@2x` versions at 240 x 240 for Retina and high-DPI
+  screens, and a `skin.json`:
+  - `{"name": "Inspector", "eyes": "frames"}`: the images have eyes; add `<state>_blink.png` (and `@2x`) with them
+    closed. A state without a blink image just doesn't blink.
+  - `{"name": "Cloud", "eyes": "drawn", "eye_shape": {"left": [46, 64], "right": [74, 64], "radius": 6.5,
+    "color": "#24303C", "highlight": "#FFFFFF"}, "state_eyes": {"idle": "open", "working": "focused", "done": "happy",
+    "error": "cross"}}`: the images have no eyes and the app paints them at those positions (in the 120 x 120 image).
+  To redraw the placeholders: `python scripts/make_mascot_placeholders.py --force`.
 - **Settings** are saved in the OS config folder, not in the project:
   Windows `%LOCALAPPDATA%\VideoQCBot\settings.json`, macOS `~/Library/Application Support/VideoQCBot/settings.json`.
 - **macOS and full-screen apps:** macOS puts each full-screen app in its own Space. The mascot is set to

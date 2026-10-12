@@ -16,7 +16,9 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from src.app import assets  # noqa: E402
 from src.app.main import make_application  # noqa: E402
-from src.app.mascot import SIZE, MascotWindow, badge_text  # noqa: E402
+from src.app.mascot import PAD, SPRITE, WINDOW, MascotWindow, badge_text  # noqa: E402
+
+CENTER = QPoint(WINDOW // 2, WINDOW // 2)        # the middle of the sprite: inside its hit region
 from src.app.settings import Settings  # noqa: E402
 
 
@@ -62,18 +64,19 @@ def test_settings_live_in_the_os_config_folder():
 
 # --- images ----------------------------------------------------------------------------------
 
-def test_every_state_has_a_1x_and_2x_image(app):
-    folder = assets.assets_dir() / "mascot"
-    for state in assets.STATES:
-        assert (folder / f"{state}.png").is_file() and (folder / f"{state}@2x.png").is_file()
-        sizes = {(s.width(), s.height()) for s in assets.load_icon(folder / f"{state}.png").availableSizes()}
-        assert {(120, 120), (240, 240)} <= sizes
+def test_every_skin_has_a_1x_and_2x_image_per_state(app):
+    for skin in assets.available_skins():
+        folder = assets.mascot_dir() / skin
+        for state in assets.STATES:
+            assert (folder / f"{state}.png").is_file() and (folder / f"{state}@2x.png").is_file()
+            sizes = {(s.width(), s.height()) for s in assets.load_icon(folder / f"{state}.png").availableSizes()}
+            assert {(120, 120), (240, 240)} <= sizes
 
 
 def test_missing_image_falls_back_to_a_drawn_circle(app, settings, tmp_path):
-    icons = assets.mascot_icons(tmp_path / "no images here")
-    assert all(icon.isNull() for icon in icons.values())
-    window = MascotWindow(settings, icons)
+    skin = assets.load_skin("inspector", base=tmp_path / "no skins here")
+    assert all(icon.isNull() for icon in skin.icons.values())
+    window = MascotWindow(settings, skin)
     assert not window.grab().toImage().isNull()                         # paints without crashing
 
 
@@ -82,7 +85,7 @@ def test_missing_image_falls_back_to_a_drawn_circle(app, settings, tmp_path):
 def test_window_is_small_frameless_transparent_and_on_top(app, settings):
     window = MascotWindow(settings)
     flags = window.windowFlags()
-    assert window.size().width() == SIZE == window.size().height()
+    assert window.size().width() == WINDOW == window.size().height() == SPRITE + 2 * PAD
     assert flags & Qt.WindowType.FramelessWindowHint and flags & Qt.WindowType.WindowStaysOnTopHint
     assert flags & Qt.WindowType.Tool                                   # no taskbar button / window list entry
     assert window.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -109,7 +112,7 @@ def test_drag_moves_the_window_and_saves_the_position(app, settings):
     window = MascotWindow(settings)
     window.move(200, 200)
     window.show()
-    start = window.mapToGlobal(QPoint(60, 60))
+    start = window.mapToGlobal(CENTER)
     mouse(window, QEvent.Type.MouseButtonPress, start, Qt.MouseButton.LeftButton)
     mouse(window, QEvent.Type.MouseMove, start + QPoint(40, 25), Qt.MouseButton.LeftButton)
     mouse(window, QEvent.Type.MouseButtonRelease, start + QPoint(40, 25), Qt.MouseButton.NoButton)
@@ -122,7 +125,7 @@ def test_a_click_without_moving_is_not_a_drag(app, settings):
     window = MascotWindow(settings)
     window.move(200, 200)
     window.show()
-    start = window.mapToGlobal(QPoint(60, 60))
+    start = window.mapToGlobal(CENTER)
     mouse(window, QEvent.Type.MouseButtonPress, start, Qt.MouseButton.LeftButton)
     mouse(window, QEvent.Type.MouseMove, start + QPoint(1, 1), Qt.MouseButton.LeftButton)
     mouse(window, QEvent.Type.MouseButtonRelease, start + QPoint(1, 1), Qt.MouseButton.NoButton)

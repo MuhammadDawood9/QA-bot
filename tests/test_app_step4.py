@@ -15,7 +15,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from src import config as config_module  # noqa: E402
 from src.app import main as app_main  # noqa: E402
-from src.app.mascot import BOB_PIXELS, MascotWindow  # noqa: E402
+from src.app.mascot import MascotWindow  # noqa: E402
 from src.app.settings import Settings  # noqa: E402
 
 
@@ -26,20 +26,20 @@ def app():
 
 # --- animation -------------------------------------------------------------------------------
 
-def test_face_bobs_only_while_working(app, tmp_path):
+def test_glow_pulses_only_while_working(app, tmp_path):
     mascot = MascotWindow(Settings(tmp_path / "s.json"))
-    assert not mascot.animating
+    assert not mascot.glow.animating
     mascot.set_state("working")
-    assert mascot.animating
+    assert mascot.glow.animating
     seen = set()
-    end = time.monotonic() + 1.5
+    end = time.monotonic() + 1.0
     while time.monotonic() < end:
         QApplication.processEvents()
-        seen.add(round(mascot.bob, 1))
+        seen.add(round(mascot.glow.glowOpacity, 2))
         time.sleep(0.02)
-    assert min(seen) >= 0 and max(seen) <= BOB_PIXELS and len(seen) > 3      # it actually moves, within bounds
-    mascot.set_state("done", 2)
-    assert not mascot.animating and mascot.bob == 0.0                       # no CPU when not working
+    assert len(seen) > 5 and 0.3 <= min(seen) and max(seen) <= 0.9        # it actually breathes, within bounds
+    mascot.set_state("idle")
+    assert not mascot.glow.animating and mascot.glow.glowOpacity == 0.0    # no CPU when not working
 
 
 # --- start at login --------------------------------------------------------------------------

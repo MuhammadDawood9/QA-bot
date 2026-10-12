@@ -1,0 +1,23 @@
+{
+  "name": "Cloud",
+  "eyes": "drawn",
+  "eye_shape": {
+    "left": [
+      46,
+      64
+    ],
+    "right": [
+      74,
+      64
+    ],
+    "radius": 6.5,
+    "color": "#24303C",
+    "highlight": "#FFFFFF"
+  },
+  "state_eyes": {
+    "idle": "open",
+    "working": "focused",
+    "done": "happy",
+    "error": "cross"
+  }
+}

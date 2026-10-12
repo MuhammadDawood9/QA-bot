@@ -720,6 +720,20 @@ Windows 10/11 and macOS (Intel, also Apple Silicon); OS-specific code only in `s
 - `--selftest` and `--check VIDEO` let a build be verified without clicking through it.
 - **Not done:** code signing (Windows certificate, Apple Developer ID and notarization), so first runs show SmartScreen
   and Gatekeeper warnings (steps in `packaging/README.md`); an installer program; a native Apple Silicon build.
+- **Mascot skins, glow and blinks (2026-10-12):** skins are folders `assets/mascot/<skin>/` with a `skin.json`
+  (`eyes`: `frames` with `<state>_blink.png`, or `drawn` with eye positions, size, colors and a style per state);
+  placeholders: inspector (frames), cloud (drawn), robot (the first art, frames). Chosen in the menu, remembered.
+  **Two windows:** the sprite window is masked to the sprite's shape (alpha ≥ 50%, plus the badge), which makes that
+  shape the one hit region for hover, click, drag and drop and lets clicks around it through on both OSes (a mask
+  removes those pixels from the window; transparency alone is click-through only on Windows, and only at alpha 0,
+  so a semi-transparent glow would block clicks). The glow window (176 px, sprite + 28 px padding each side) sits
+  behind it with `WindowTransparentForInput`, draws the radial-gradient halo, the progress ring and the drop
+  highlight, and is never clipped by the mask. Glow animated with QPropertyAnimation on opacity and radius: working
+  blue-violet pulse (1.8 s, looping), done green fade-out (2.5 s), error steady red, idle none. **Measured on
+  Windows: about 1.3% of one core extra while pulsing (62 glow repaints/s); idle: no repaints, no timers.** The
+  Step 4 bob was dropped: the pulse is the working animation. One QTimer drives every blink: on hover, 120 ms closed,
+  repeat every 3 s while hovered; optional idle blink every 5-10 s (off by default). Checked on the real Windows
+  desktop (screen capture over other windows): transparent background, unclipped glows, badge. **macOS untested.**
 - `guess_client(video, known)` finds a client code in a file name ("E8D_reel.mp4", "8d - reel.mov") for Step 3.
 
 ### Evaluation of the color checks (2026-10-12)
