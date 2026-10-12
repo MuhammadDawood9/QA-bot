@@ -42,12 +42,16 @@ CSV_COLUMNS = ["timestamp", "seconds", "caption_id", "type", "severity", "captio
 
 @dataclass
 class ReportInfo:
-    srt: Path
+    srt: Path | None                 # None = captions were read from the video
     video: Path | None = None
     client: str | None = None
     rules_version: str | None = None
     checks: list[str] = field(default_factory=list)     # one line per check: what ran, what was skipped
     generated: dt.datetime = field(default_factory=dt.datetime.now)
+
+
+def captions_source(info: "ReportInfo") -> str:
+    return info.srt.name if info.srt is not None else "read from the video (OCR)"
 
 
 def label(issue_type: str) -> str:
@@ -175,7 +179,7 @@ def _header(info, captions, issues, flagged) -> list[str]:
     title = (info.video or info.srt).name
     lines = [f"# QC report: {md(title)}", ""]
     lines.append(f"- **Video:** {md(info.video.name) if info.video else 'none (caption text checks only)'}")
-    lines.append(f"- **Captions:** {md(info.srt.name)}, {len(captions)} captions")
+    lines.append(f"- **Captions:** {md(captions_source(info))}, {len(captions)} captions")
     lines.append(f"- **Client:** {md(info.client or 'default rules')}")
     lines.append(f"- **Generated:** {info.generated:%Y-%m-%d %H:%M}")
     lines.append(f"- **Rules version:** {md(info.rules_version or 'unknown')}")

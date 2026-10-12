@@ -151,7 +151,8 @@ def test_grab_frame_uses_an_argument_list(monkeypatch, tmp_path):
 
     def fake_run(cmd, **kwargs):
         seen["cmd"] = cmd
-        (tmp_path / "f.jpg").write_bytes(b"x")
+        from PIL import Image
+        Image.new("RGB", (8, 8)).save(tmp_path / "f.jpg", "JPEG")
         return type("R", (), {"returncode": 0, "stderr": ""})()
     monkeypatch.setattr(screenshots.subprocess, "run", fake_run)
     assert screenshots.grab_frame("ffmpeg", Path("my clip.mp4"), 3.1, tmp_path / "f.jpg", 480)

@@ -127,6 +127,9 @@ def build_client_files(rows: list[dict], clients_dir: Path) -> list[str]:
             "#   overrides:  same structure as \"checks:\" in config.yaml, e.g.\n"
             "#                 too_short:\n"
             "#                   min_words: 3\n"
+            "#   ocr:        where this client's burned-in captions are; same keys as \"ocr:\" in config.yaml, e.g.\n"
+            "#                 region: {left: 0.05, top: 0.68, width: 0.9, height: 0.27}\n"
+            "#                 ignore_patterns: ['day \\d+']\n"
         )
         body = {
             "client": code,

@@ -5,6 +5,9 @@
 #   overrides:  same structure as "checks:" in config.yaml, e.g.
 #                 too_short:
 #                   min_words: 3
+#   ocr:        where this client's burned-in captions are; same keys as "ocr:" in config.yaml, e.g.
+#                 region: {left: 0.05, top: 0.68, width: 0.9, height: 0.27}
+#                 ignore_patterns: ['day \d+']
 client: E8C
 project: Sirina Talbot / SirinTalbot reels
 notes: Yellow + white subtitle theme (white general, yellow key words), no glow subtitles; capitalize

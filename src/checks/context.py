@@ -23,6 +23,8 @@ class CheckContext:
     llm_cache_file: Path | None = None                     # where API answers are cached
     transcript: list | None = None                         # SpokenWords from Whisper; None = no video given
     stats: dict = field(default_factory=dict)              # per-check counters for the CLI summary
+    ocr_low_confidence: float = 0.75                       # OCR captions read less surely: text issues marked doubtful
+    ocr_always_doubtful: tuple[str, ...] = ()              # issue types always marked doubtful on OCR captions
 
     @cached_property
     def dictionary(self) -> Dictionary:

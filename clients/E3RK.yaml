@@ -5,7 +5,12 @@
 #   overrides:  same structure as "checks:" in config.yaml, e.g.
 #                 too_short:
 #                   min_words: 3
+#   ocr:        where this client's burned-in captions are; same keys as "ocr:" in config.yaml, e.g.
+#                 region: {left: 0.05, top: 0.68, width: 0.9, height: 0.27}
+#                 ignore_patterns: ['day \d+']
 client: E3RK
 project: My Criminal Life Lead Me to Christ reels
 notes: 'Flowing sentences: fewer full stops, no capital after them; text placed just below the chin.'
 overrides: {}
+ocr:
+  region: full                     # text sits just below the speaker's chin and moves with them

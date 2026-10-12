@@ -81,3 +81,9 @@ def check_settings(config: dict, client: dict, check_name: str) -> dict:
     base = config.get("checks", {}).get(check_name, {})
     override = (client or {}).get("overrides", {}).get(check_name, {})
     return deep_merge(base, override)
+
+
+def ocr_settings(config: dict, client: dict) -> dict:
+    """Settings for reading burned-in captions: config.yaml "ocr:" with the client's "ocr:" block applied.
+    Unlike check overrides, a client's region or ignore lists sit directly under "ocr:" in its file."""
+    return deep_merge(config.get("ocr", {}), (client or {}).get("ocr") or {})

@@ -32,6 +32,7 @@ class Caption:
     end: float            # seconds
     text: str             # line breaks inside one caption are kept as "\n"
     source: str = "srt"   # "srt" or "ocr"
+    ocr_confidence: float | None = None   # OCR captions only: how sure the reading is (0..1)
 
     @property
     def duration(self) -> float:

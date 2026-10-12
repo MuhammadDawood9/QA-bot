@@ -133,3 +133,23 @@ def test_screenshots_are_embedded(tmp_path, monkeypatch):
 def test_settings_zoom_is_schema_valid(tmp_path):
     _, doc = docx_of(make(tmp_path))
     assert doc.settings.element.find(qn("w:zoom")).get(qn("w:percent")) == "100"
+
+
+def test_screenshot_without_jfif_header_is_made_word_compatible(tmp_path):
+    """ffmpeg 9 can write JPEGs with no JFIF header, which python-docx refuses."""
+    from io import BytesIO
+
+    from docx import Document
+    from PIL import Image
+
+    from src.report.screenshots import make_word_compatible
+
+    buf = BytesIO()
+    Image.new("RGB", (32, 18), (40, 60, 80)).save(buf, "JPEG")
+    data = buf.getvalue()
+    assert data[2:4] == b"\xff\xe0"                       # APP0 (JFIF) segment
+    app0_len = int.from_bytes(data[4:6], "big")
+    bare = tmp_path / "bare.jpg"
+    bare.write_bytes(data[:2] + data[4 + app0_len:])      # like ffmpeg 9: no JFIF header
+    assert make_word_compatible(bare)
+    Document().add_picture(str(bare))                    # would raise UnrecognizedImageError before

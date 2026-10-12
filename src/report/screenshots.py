@@ -19,4 +19,19 @@ def grab_frame(ffmpeg: str, video: Path, seconds: float, out: Path, width: int =
     if result.returncode != 0 or not out.is_file():
         log.warning("no screenshot at %.3f s: %s", seconds, (result.stderr or "no frame there").strip()[-200:])
         return False
+    return make_word_compatible(out)
+
+
+def make_word_compatible(path: Path) -> bool:
+    """Re-save the JPEG with a standard JFIF header. Some ffmpeg versions (9.x) leave it out
+    depending on the video, and python-docx then refuses the image (UnrecognizedImageError)."""
+    from PIL import Image
+
+    try:
+        with Image.open(path) as img:
+            img.load()
+            img.convert("RGB").save(path, "JPEG", quality=88)
+    except OSError as exc:
+        log.warning("screenshot %s is unreadable: %s", path.name, exc)
+        return False
     return True

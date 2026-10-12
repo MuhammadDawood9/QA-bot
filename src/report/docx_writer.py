@@ -18,7 +18,7 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
 from src.models import SEVERITIES
-from src.report.builder import ReportData, label, worst
+from src.report.builder import ReportData, captions_source, label, worst
 from src.utils.timecode import format_timestamp
 
 PAGE_SIZES = {"a4": (21.0, 29.7), "letter": (21.59, 27.94)}     # cm
@@ -198,7 +198,7 @@ def write_docx(data: ReportData) -> Path:
     doc.add_heading(f"QC report: {clean(title)}", level=0)
     facts = [
         ("Video", info.video.name if info.video else "none (caption text checks only)"),
-        ("Captions", f"{info.srt.name}, {len(data.captions)} captions"),
+        ("Captions", f"{captions_source(info)}, {len(data.captions)} captions"),
         ("Client", info.client or "default rules"),
         ("Generated", f"{info.generated:%Y-%m-%d %H:%M}"),
         ("Rules version", info.rules_version or "unknown"),

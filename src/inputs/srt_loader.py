@@ -62,3 +62,25 @@ def load_srt(path: Path) -> list[Caption]:
     # utf-8-sig is UTF-8 that also drops the byte-order mark some editors write at the start.
     with path.open(encoding="utf-8-sig") as f:
         return parse_srt(f.read())
+
+
+def _srt_time(seconds: float) -> str:
+    ms = int(round(max(0.0, seconds) * 1000))
+    h, ms = divmod(ms, 3_600_000)
+    m, ms = divmod(ms, 60_000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def format_srt(captions: list[Caption]) -> str:
+    blocks = [f"{i}\n{_srt_time(c.start)} --> {_srt_time(c.end)}\n{c.text}"
+              for i, c in enumerate(captions, start=1)]
+    return "\n\n".join(blocks) + "\n" if blocks else ""
+
+
+def write_srt(captions: list[Caption], path: Path) -> Path:
+    """Save captions (e.g. the ones read from a video) as an .srt, to look at or reuse with --srt."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(format_srt(captions), encoding="utf-8")
+    return path

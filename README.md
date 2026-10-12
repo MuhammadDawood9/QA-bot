@@ -1,7 +1,7 @@
 # Video QC Bot
 
-A second pair of eyes for caption QC. It reads a video's captions (an `.srt` file for now),
-checks them against the QC rules taken from past ClickUp comments, and prints a timestamped
+A second pair of eyes for caption QC. It reads the captions burned into a video (or an `.srt`
+file), checks them against the QC rules taken from past ClickUp comments, and prints a timestamped
 list of issues. See `video-qc-bot-project-plan.md` for the full plan and phase status.
 
 **Built so far:**
@@ -14,6 +14,8 @@ list of issues. See `video-qc-bot-project-plan.md` for the full plan and phase s
   question marks, apostrophes), with caching so reruns are free.
 - Phase 4: captions compared with what is actually said (faster-whisper on the CPU): wrong,
   missing and extra words, and captions that appear before the words are spoken.
+- Burned-in captions: read straight from the video with OCR (RapidOCR on the CPU), per-client
+  caption region, word-by-word animated captions grouped into whole captions.
 - Report: a Word document and a Markdown document with a screenshot of every flagged caption,
   plus a CSV of the issues for Excel or ClickUp (`--report`).
 
@@ -96,10 +98,17 @@ To use a different spreadsheet: `python scripts/prepare_data.py --xlsx data/othe
 Everything you add to a client file other than `client`, `project` and `notes` (for example
 `overrides:` or `glossary:`) is kept when you rerun the script.
 
-### 2. Check a caption file
+### 2. Check a video
 
 ```
-python -m src.main --srt path/to/captions.srt --client E8D
+python -m src.main --video path/to/video.mp4 --client E8D --report
+```
+
+The captions are read from the picture (see "Captions burned into the video" below), then
+checked. If you do have a caption file, give it instead and the OCR is skipped:
+
+```
+python -m src.main --srt path/to/captions.srt --client E8D [--video path/to/video.mp4]
 ```
 
 - `--client` loads `clients/E8D.yaml`. If there's no file for that client, the defaults in
@@ -107,9 +116,10 @@ python -m src.main --srt path/to/captions.srt --client E8D
 - `--json` prints the issues as JSON instead.
 - `--no-llm` skips the punctuation check: no API calls, no cost.
 - `--report` also writes a report folder (see "The report" below).
-- `--video path/to/video.mp4` also compares the captions with what is said in the video
-  (see "Captions vs audio" below). The transcript is saved per video, so a second run on the
-  same video starts checking immediately.
+- `--video path/to/video.mp4` reads the captions from the video when there's no `--srt`, and
+  compares them with what is said (see "Captions vs audio" below). Both the captions read and
+  the transcript are saved per video, so a second run on the same video starts checking immediately.
+- `--save-srt captions.srt` also saves the captions as an `.srt`, to see exactly what the OCR read.
 - When the punctuation check runs, a summary line at the end shows how many captions were
   answered from the cache, how many API requests were made and roughly what they cost.
 - To try it on the bundled fake captions:
@@ -138,7 +148,7 @@ python -m pytest
 ## Configuration
 
 - **`config.yaml`** holds every threshold. The `machine:` block at the top holds the
-  settings that differ between machines (Whisper model size, CPU threads, Tesseract path).
+  settings that differ between machines (Whisper model size, CPU threads, ffmpeg path).
   Edit only that block when moving to the MacBook.
 - **`clients/<CLIENT>.yaml`** holds per-client overrides. Anything under `overrides:` replaces
   the matching value in `config.yaml`'s `checks:` block:
@@ -162,6 +172,60 @@ python -m pytest
   ("app", "vlog", "influencer"). Add to it when a normal word keeps getting flagged.
 - **Quote words in YAML lists.** Unquoted `yes`, `no`, `on` and `off` are read as true/false.
   The bot stops with an error rather than silently misreading them.
+
+### Captions burned into the video
+
+Without `--srt`, the bot reads the captions off the picture:
+
+1. About 5 frames a second (`ocr.sample_fps`) are taken from the video.
+2. Each frame is cropped to the client's caption region (default: the whole frame).
+3. The OCR only runs when something in that region changed since the last frame read.
+4. Text that isn't a caption is dropped: anything in `ignore_regions`, anything matching
+   `ignore_patterns`, and lone letters the OCR isn't sure of.
+5. Readings are grouped into captions. Word-by-word animation ("We" -> "We need" -> "We need to")
+   becomes one caption with the full text, starting when the first word appears. A highlighted
+   key word in another color is joined back into its line. A title elsewhere on screen is
+   followed separately, so it doesn't mix into the captions.
+6. Each caption's text is the reading most frames agree on. How much they agree is its OCR
+   confidence.
+
+**OCR mistakes vs caption mistakes.** The OCR can misread a letter, drop a space between words
+or read a comma as a full stop. So on captions read from the video:
+- spelling, capitalization, spacing, punctuation and wrong-word flags on a caption the OCR wasn't
+  sure of (below `ocr.low_confidence`) are marked `low` with a note to check the screenshot;
+- spacing and punctuation flags are always marked that way (`ocr.always_doubtful`), because those
+  are the OCR's known weak spots.
+
+**Per client**, in `clients/<CLIENT>.yaml` (same keys as `ocr:` in `config.yaml`). Regions are
+fractions of the frame: `top: 0.7` is 70% of the way down.
+
+```yaml
+ocr:
+  region: {left: 0.05, top: 0.68, width: 0.9, height: 0.27}   # where the captions are
+  ignore_regions:                                              # a logo or graphic inside it
+    - {left: 0.8, top: 0.68, width: 0.2, height: 0.1}
+  ignore_patterns: ['day \d+', 'p ?21']                       # titles that aren't captions
+```
+
+- Set a region whenever a client's captions stay in one place. It's faster (a caption strip reads
+  in about 0.2 s, a full frame in about 1 s) and keeps titles and on-screen graphics out.
+- Leave `region: full` for clients whose text moves (E3RK, below the speaker's chin).
+- To set a region, take a screenshot of a caption, and measure where its top and bottom fall as a
+  share of the frame height. Leave some room for two-line captions.
+- Run with `--save-srt` and compare the `.srt` with the video to see what the OCR read.
+
+Speed on this laptop's CPU, 5 frames a second: roughly 2.5-3x the video's length with a moving
+background and the whole frame scanned; a caption region is several times faster. The result is
+cached in `cache/ocr/`, so later runs on the same video are instant.
+
+Test videos with burned-in captions in three styles (plain subtitle with a title in the corner,
+text on a black box, word-by-word with a yellow key word):
+
+```
+python scripts/make_sample_video.py
+python scripts/make_burned_in_samples.py
+python -m pytest --run-slow tests/test_ocr.py
+```
 
 ### The too-short / phrase-break check
 

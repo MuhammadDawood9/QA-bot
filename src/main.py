@@ -1,5 +1,6 @@
 """Command line entry point.
 
+    python -m src.main --video video.mp4 --client E8D          (captions read from the video)
     python -m src.main --srt captions.srt --client E8D [--video video.mp4]
 """
 
@@ -11,20 +12,28 @@ import json
 import logging
 import sys
 import warnings
+from dataclasses import replace
 from pathlib import Path
 from typing import Sequence
 
 from src.checks import CHECKS
 from src.checks.context import CheckContext
-from src.config import check_settings, load_client, load_config, load_yaml, resolve_path
-from src.inputs.srt_loader import SrtError, load_srt
+from src.config import check_settings, load_client, load_config, load_yaml, ocr_settings, resolve_path
+from src.inputs.srt_loader import SrtError, load_srt, write_srt
+from src.inputs.video_ocr import OcrError, read_burned_in_captions
 from src.audio.transcribe import get_transcript
-from src.models import Caption, Issue
+from src.models import (CAPITALIZATION, EXTRA_WORD, MISSING_WORD, PUNCTUATION, REPEATED_WORD, SPACING,
+                        SPELLING, WRONG_WORD, Caption, Issue)
 from src.report.builder import ReportInfo, build_report
 from src.utils.dictionary import load_word_list
 from src.utils.glossary import Glossary
 from src.utils.system import MissingToolError, find_ffmpeg
 from src.utils.timecode import format_timestamp
+
+# Issues that depend on reading every letter right, so an OCR misread can cause them.
+TEXT_ISSUES = {SPELLING, REPEATED_WORD, CAPITALIZATION, SPACING, PUNCTUATION, WRONG_WORD, MISSING_WORD, EXTRA_WORD}
+OCR_DOUBT_NOTE = " (The OCR wasn't sure of this caption's text: check the screenshot before fixing.)"
+OCR_WEAK_SPOT_NOTE = " (Read by OCR, which can miss spaces and mix up commas and full stops: check the screenshot.)"
 
 
 def load_examples(path: Path) -> list[dict]:
@@ -42,6 +51,7 @@ def build_context(config: dict, client: dict) -> CheckContext:
     settings = {name: check_settings(config, client, name) for name in CHECKS}
     language = settings.get("spelling", {}).get("language", "en")
     extra_words = load_word_list(resolve_path(config, "extra_words_file"))
+    ocr = ocr_settings(config, client)
 
     rules_path = resolve_path(config, "rules_file")
     rules = load_yaml(rules_path).get("rules", []) if rules_path.is_file() else []
@@ -52,19 +62,42 @@ def build_context(config: dict, client: dict) -> CheckContext:
 
     return CheckContext(glossary=glossary, language=language, extra_words=extra_words, settings=settings,
                         client=client, rules=rules, examples=examples,
-                        llm_cache_file=resolve_path(config, "llm_cache_file"))
+                        llm_cache_file=resolve_path(config, "llm_cache_file"),
+                        ocr_low_confidence=float(ocr.get("low_confidence", 0.75)),
+                        ocr_always_doubtful=tuple(ocr.get("always_doubtful") or ()))
 
 
 def run_checks(captions: Sequence[Caption], config: dict, client: dict,
                context: CheckContext | None = None) -> list[Issue]:
     context = context or build_context(config, client)
     issues: list[Issue] = []
+    by_id = {c.id: c for c in captions}
     for name, check in CHECKS.items():
         settings = context.settings_for(name)
         if settings.get("enabled", False):
             min_confidence = settings.get("min_confidence", 0.0)
-            issues.extend(i for i in check(captions, settings, context) if i.confidence >= min_confidence)
+            found = (mark_ocr_doubt(i, by_id.get(i.caption_id), context.ocr_low_confidence,
+                                    context.ocr_always_doubtful)
+                     for i in check(captions, settings, context))
+            issues.extend(i for i in found if i.confidence >= min_confidence)
     return sorted(issues, key=lambda issue: (issue.timestamp, issue.caption_id))
+
+
+def mark_ocr_doubt(issue: Issue, caption: Caption | None, low_confidence: float,
+                   always_doubtful: Sequence[str] = ()) -> Issue:
+    """A text issue on a caption read by OCR may be the OCR's mistake, not the editor's: when the
+    OCR was unsure of the caption, or the issue is of a type the OCR often gets wrong (spaces,
+    commas vs full stops), make it low severity and say so in the message. When the OCR was
+    unsure, the issue's confidence is also capped at the OCR's."""
+    if caption is None or caption.source != "ocr" or issue.type not in TEXT_ISSUES:
+        return issue
+    unsure = caption.ocr_confidence is not None and caption.ocr_confidence < low_confidence
+    if not unsure and issue.type not in always_doubtful:
+        return issue
+    if unsure:
+        return replace(issue, severity="low", confidence=min(issue.confidence, caption.ocr_confidence),
+                       message=issue.message + OCR_DOUBT_NOTE)
+    return replace(issue, severity="low", message=issue.message + OCR_WEAK_SPOT_NOTE)
 
 
 def format_llm_summary(context: CheckContext) -> str | None:
@@ -100,14 +133,18 @@ def format_issues(issues: Sequence[Issue], header: str) -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m src.main", description="Video QC Bot: caption checks.")
-    parser.add_argument("--srt", required=True, type=Path, help="caption file (.srt)")
+    parser.add_argument("--srt", type=Path, default=None,
+                        help="caption file (.srt); leave it out to read the captions burned into --video")
     parser.add_argument("--client", help="client code, e.g. E8D (loads clients/E8D.yaml)")
     parser.add_argument("--config", type=Path, default=None, help="config file (default: config.yaml)")
     parser.add_argument("--json", action="store_true", help="print issues as JSON instead of text")
     parser.add_argument("--no-llm", action="store_true",
                         help="skip the punctuation check (no Anthropic API calls, no cost)")
     parser.add_argument("--video", type=Path, default=None,
-                        help="the video, to compare captions with what is said (Whisper; cached per video)")
+                        help="the video: captions are read from it (OCR) when there is no --srt, and compared "
+                             "with what is said (Whisper); both cached per video")
+    parser.add_argument("--save-srt", type=Path, default=None, metavar="FILE",
+                        help="also save the captions as an .srt (useful to see what the OCR read)")
     parser.add_argument("--report", action="store_true",
                         help="also write a report folder (report.md, report.docx, screenshots, issues.csv) under reports/")
     return parser
@@ -121,12 +158,21 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
 
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.srt is None and args.video is None:
+        parser.error("give --video (captions are read from it) or --srt")
     try:
         config = load_config(args.config)
         client = load_client(config, args.client)
-        captions = load_srt(args.srt)
-    except (OSError, SrtError) as exc:
+        if args.srt is not None:
+            captions = load_srt(args.srt)
+        else:
+            captions = read_burned_in_captions(args.video, ocr_settings(config, client),
+                                               resolve_path(config, "ocr_cache_dir"))
+        if args.save_srt is not None:
+            print(f"captions saved: {write_srt(captions, args.save_srt)}", file=sys.stderr)
+    except (OSError, SrtError, OcrError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
@@ -148,7 +194,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.json:
         print(json.dumps([issue.to_dict() for issue in issues], indent=2, ensure_ascii=False))
     else:
-        header = (f"{args.srt.name} | client {client.get('client') or 'default'} | "
+        header = (f"{caption_source_name(args)} | client {client.get('client') or 'default'} | "
                   f"{len(captions)} captions | {len(issues)} issue{'s' if len(issues) != 1 else ''}")
         print(format_issues(issues, header))
     summary = format_llm_summary(context)
@@ -159,6 +205,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         for path in write_report(captions, issues, config, client, context, args):
             print(f"report: {path}", file=sys.stderr)
     return 0
+
+
+def caption_source_name(args) -> str:
+    return args.srt.name if args.srt is not None else f"{args.video.name} (captions read from the video)"
 
 
 def check_status_lines(context: CheckContext, args) -> list[str]:

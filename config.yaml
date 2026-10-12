@@ -7,7 +7,6 @@ machine:
   whisper_model_size: base     # "base" while testing, "small" for real use
   cpu_threads: 4               # faster-whisper threads; set to the MacBook's performance-core count
   ffmpeg_path: null            # null = find "ffmpeg" on PATH; or the full path to the ffmpeg program
-  tesseract_path: null         # null = find "tesseract" on PATH (OCR milestone, not built yet)
 
 paths:
   rules_file: rules.yaml
@@ -18,6 +17,7 @@ paths:
   exceptions_file: data/exceptions.yaml
   llm_cache_file: cache/punctuation.json   # cached API answers; delete it to force a fresh review
   transcript_cache_dir: cache/transcripts  # one Whisper transcript per video (by file hash)
+  ocr_cache_dir: cache/ocr                 # captions read from each video (by file hash and OCR settings)
   models_dir: models                       # Whisper models, downloaded on first use
 
 # Frame rate used to convert HH:MM:SS:FF timecodes (e.g. from ClickUp comments) to seconds.
@@ -25,8 +25,29 @@ paths:
 timecode:
   fps: 30
 
-input:
-  mode: srt                    # srt only for now; ocr comes in a later milestone
+# Reading captions burned into the video (used when no --srt is given).
+# A client changes any of these with an "ocr:" block in clients/<CLIENT>.yaml, same keys.
+# Regions are fractions of the frame: left/top 0 = left/top edge, width/height 1 = the whole frame.
+ocr:
+  region: full                 # where captions are: "full" (whole frame) or {left: 0.05, top: 0.65, width: 0.9, height: 0.3}
+  ignore_regions: []           # text whose middle is inside one of these is skipped (logos, corner titles)
+  ignore_patterns: []          # on-screen text that isn't a caption, as regexes for the whole text, e.g. ['day \d+'] (single quotes keep the \ as typed; a space also matches no space)
+  sample_fps: 5                # frames read per second; captions on screen for 1-2 frames need more
+  change_threshold: 6.0        # a frame is OCR'd again only if part of the region changed by this much (0-255 grey levels)
+  min_box_score: 0.5           # text the OCR is less sure of than this is skipped (fades, motion blur)
+  min_single_char_score: 0.8   # a lone letter or digit needs this score (round shapes in the picture read as "O")
+  same_text_ratio: 85          # readings this similar (0-100) are the same caption, OCR noise aside
+  max_gap_sec: 0.5             # a caption missing from frames for up to this long (animation, flicker) is still one caption
+  min_single_frame_score: 0.8  # text seen in only one frame is kept only if read at least this surely
+  block_gap_lines: 1.5         # lines further apart than this many line heights are separate texts
+  det_max_side: 960            # frames are shrunk to this many pixels on the long side for text finding
+  cpu_threads: -1              # -1 = all cores
+  # Spelling, capitalization, spacing and punctuation flags on a caption the OCR read less surely
+  # than this are marked low severity with a note to check the screenshot: it may be the OCR's mistake.
+  low_confidence: 0.75
+  # The OCR's known weak spots: it drops spaces between words and mixes up commas and full stops
+  # even when sure. Flags of these types on OCR captions always get low severity and the note.
+  always_doubtful: ["spacing", "punctuation"]
 
 checks:
   too_short:
