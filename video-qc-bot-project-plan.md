@@ -1,0 +1,602 @@
+# Video QC Bot: Project Plan
+
+A file-based assistant that scans a finished video, finds caption and text errors (and later color-consistency issues), and produces a timestamped QC report I can read afterward.
+
+---
+
+## 1. Goal
+
+I work as a QA reviewer for videos. I catch caption mistakes, color grading problems, and creative-direction issues. This tool acts as a second pair of eyes: I run it on the video file while I do my own QC pass, and when it finishes I get a document listing every issue it found, with timestamp, screenshot, explanation, and suggested fix.
+
+**Success looks like:** the bot catches most of the repetitive mistakes I already comment on in ClickUp, with few enough false alarms that I keep using it.
+
+---
+
+## 2. Scope
+
+### In scope (V1)
+- Caption checks:
+  - **Too-short captions** (a single word on screen; minimum is 2–3 words)
+  - **Spelling mistakes**
+  - **Punctuation mistakes** (missing or wrong full stops, commas, etc.)
+- Timestamped report document with screenshots
+
+### Planned later (V2+)
+- Shot-to-shot color consistency checks (measured, not guessed)
+- Out-of-range values (clipped highlights, crushed blacks, saturation spikes)
+- Creative-direction checks against a written brief or style guide
+- Pull past QC comments from ClickUp automatically
+- Side-panel or small web UI
+
+### Out of scope for now
+- True live capture while the video plays
+- Judging calibrated color by eye (a vision model can't replace scopes and a calibrated monitor)
+- Audio and subtitle sync
+
+---
+
+## 3. Key decision: file-based, not live
+
+The bot processes the **video file** (or caption file), not a live screen capture.
+
+Reasons:
+- Caption errors are easier to catch with exact start and end times for every caption.
+- The report needs a complete pass over the video.
+- Rules can be tweaked and rerun on the same file without replaying the video.
+- Cheaper and more accurate than analyzing a continuous stream.
+
+Workflow: I start the bot on the file when I begin my own QC. The report is ready by the time I finish, and I compare my notes with the bot's.
+
+---
+
+## 4. Open question that changes the build
+
+**Are captions burned into the video, or do I also receive a caption file (SRT / VTT) from the editors?**
+
+| Situation | Approach | Difficulty |
+|---|---|---|
+| I get an SRT/VTT file | Parse the text and timings directly, no OCR | Easy, most accurate |
+| Captions are burned in only | Detect frames, OCR the text, rebuild caption timings | Harder, needs tuning |
+| Both are available | Use the SRT for text checks, and OCR a sample of frames to confirm the burned-in version matches the SRT | Best coverage |
+
+The project should be built so the **checks don't care where the captions came from**. Both input paths produce the same internal data structure (see Section 6). Build the SRT path first if available, because it's faster to get working.
+
+---
+
+## 5. Architecture
+
+```
+            +-------------------+
+ video ---> |  Input layer      |
+ (+ SRT?)   |  (SRT parser OR   |
+            |  frame OCR)       |
+            +---------+---------+
+                      |
+                      v
+            +-------------------+
+            |  Caption list     |   [{id, start, end, text}, ...]
+            +---------+---------+
+                      |
+          +-----------+-----------+
+          v           v           v
+   +-----------+ +-----------+ +-----------+
+   | Length    | | Spelling  | | Punctuation|
+   | check     | | check     | | check (LLM)|
+   +-----+-----+ +-----+-----+ +-----+------+
+         |             |             |
+         +-------------+-------------+
+                       v
+              +------------------+
+              |  Issue list      |  [{time, type, severity, text, fix}]
+              +--------+---------+
+                       v
+              +------------------+
+              |  Report builder  |  -> DOCX / PDF / MD with screenshots
+              +------------------+
+```
+
+---
+
+## 6. Core data structures
+
+### Caption
+```json
+{
+  "id": 14,
+  "start": 32.480,
+  "end": 33.120,
+  "text": "Thank",
+  "source": "srt"
+}
+```
+- `start` / `end` in seconds
+- `source` is `"srt"` or `"ocr"`
+
+### Issue
+```json
+{
+  "caption_id": 14,
+  "timestamp": 32.480,
+  "type": "too_short",
+  "severity": "high",
+  "original": "Thank",
+  "message": "Caption has 1 word. Minimum is 2.",
+  "suggestion": "Merge with next caption: 'Thank you so much'",
+  "confidence": 0.95
+}
+```
+
+Issue types: `too_short`, `spelling`, `punctuation`, later `color_shift`, `brand_violation`, etc.
+
+---
+
+## 7. Modules
+
+### 7.1 Input layer
+
+**Path A: SRT/VTT parser**
+- Library: `pysrt` or `webvtt-py`
+- Output: caption list directly
+
+**Path B: Burned-in captions via OCR**
+1. Use `ffmpeg` to sample frames (start at 4 fps, tune later).
+2. Crop to the caption region (configurable, e.g. bottom 30% of the frame) to cut noise and cost.
+3. Run OCR on each cropped frame. Options: PaddleOCR or EasyOCR (local, free), or a vision model API for higher accuracy.
+4. Group consecutive frames with the same text into one caption, with start and end times.
+5. Ignore frames with no text. Use a small similarity tolerance (fuzzy match) because OCR varies slightly between frames.
+
+Tip: skip unchanged frames by comparing a perceptual hash of the caption region to the previous frame. Only run OCR when it changes.
+
+### 7.2 Too-short caption check (rule-based, no AI needed)
+
+- Count words per caption: `len(text.split())`
+- Flag if `word_count < MIN_WORDS` (default 2, configurable per client)
+- **Exceptions to reduce false positives:**
+  - Last caption of a video or segment
+  - Caption that ends a sentence with a very short word group where merging is not possible (e.g. before a long pause)
+  - Whitelisted one-word captions (intentional emphasis, e.g. "Wow.")
+  - Optional: ignore if the gap before and after is larger than X seconds (intentional pause)
+- Suggestion logic: propose merging with the previous or next caption if the combined duration is short enough.
+
+### 7.3 Spelling check
+
+- Library: `pyspellchecker`, `symspellpy`, or `language_tool_python`
+- **Custom glossary** (`glossary.txt`): brand names, product names, people, and technical terms that must not be flagged
+- Also keep a **forced-spelling list** for names with required capitalization (e.g. `YouTube`, `iPhone`)
+- Strip punctuation and handle contractions before checking
+- Detect likely **OCR misreads** separately in Path B (e.g. `rn` vs `m`, `0` vs `O`) and mark those as lower confidence
+
+### 7.4 Punctuation check (LLM-based)
+
+This is where the AI model earns its place. Rules like "where does the full stop go" depend on context, so send captions in **windows**, not one at a time.
+
+- Window: the caption under review plus 2 before and 2 after, with timings.
+- Provide my punctuation rules and real examples from ClickUp in the prompt.
+- Ask for **structured JSON output only**.
+- Batch several windows per request to control cost.
+
+**Prompt skeleton:**
+
+```
+You are a QC reviewer for video captions.
+
+RULES:
+{punctuation_rules}
+
+EXAMPLES OF REAL MISTAKES (wrong -> correct):
+{examples_from_clickup}
+
+GLOSSARY (never flag these terms):
+{glossary}
+
+Below are consecutive captions with timestamps. Review ONLY caption #{target_id}.
+Use the surrounding captions to decide if a sentence ends or continues.
+
+CAPTIONS:
+{window}
+
+Respond with ONLY JSON, no preamble, no markdown fences:
+{"has_issue": true|false, "issue_type": "punctuation", "original": "...",
+ "suggestion": "...", "explanation": "...", "confidence": 0.0-1.0}
+```
+
+- Parse the JSON safely (strip code fences if present, handle failures by logging and skipping).
+- Drop issues below a confidence threshold (start at 0.6, tune in testing).
+- Cache results by caption text hash so reruns don't pay twice.
+
+### 7.5 Report builder
+
+Output a document with:
+
+1. **Header:** video name, date, rules version, total caption count
+2. **Summary:** issue counts per type and severity
+3. **Issue table (sorted by timestamp):**
+   - Timestamp (`mm:ss.ms`)
+   - Screenshot of the frame (extracted with `ffmpeg -ss <t> -frames:v 1`)
+   - Original caption text
+   - What's wrong
+   - Suggested fix
+   - Confidence
+4. **Appendix:** full caption transcript with flagged lines highlighted
+
+Formats: start with **Markdown** (simplest, can convert later), then **DOCX** (`python-docx`) or **PDF**. Optionally also export **CSV** for importing into ClickUp.
+
+---
+
+## 8. Using my ClickUp comments
+
+My past QC comments are the most valuable asset for tuning the bot.
+
+**Steps:**
+1. Export comments (CSV export, or the ClickUp API later). Include: video/task name, timestamp (if I wrote one), the comment text.
+2. Categorize each comment: `too_short`, `spelling`, `punctuation`, `color`, `creative`, `other`.
+3. Count the frequency of each category to confirm priorities.
+4. Pull out the **repeated patterns** and write them as explicit rules (Section 7.4 prompt, `rules.yaml`).
+5. Save the best 20–40 real examples as wrong → correct pairs for the prompt.
+6. Keep a **test set**: a handful of past videos plus the comments I made on them. This is the ground truth.
+
+**Later (V2):** use the ClickUp API to auto-pull comments and auto-post the bot's findings as a task comment.
+
+---
+
+## 9. Configuration
+
+`config.yaml`
+```yaml
+input:
+  mode: srt            # srt | ocr | both
+  caption_region: [0.0, 0.70, 1.0, 1.0]   # x1, y1, x2, y2 as fractions (OCR mode)
+  sample_fps: 4
+
+checks:
+  too_short:
+    enabled: true
+    min_words: 2
+    max_gap_for_exception_sec: 1.5
+    whitelist: ["wow", "yes", "no"]
+  spelling:
+    enabled: true
+    glossary_file: glossary.txt
+    language: en
+  punctuation:
+    enabled: true
+    model: claude-sonnet-4-6
+    window_before: 2
+    window_after: 2
+    min_confidence: 0.6
+
+report:
+  format: md           # md | docx | pdf
+  include_screenshots: true
+  output_dir: reports/
+```
+
+Keep per-client overrides in separate files (e.g. `clients/clientA.yaml`) since minimum word counts and style rules may differ.
+
+---
+
+## 10. Tech stack
+
+| Purpose | Choice |
+|---|---|
+| Language | Python 3.11+ |
+| Video and frames | `ffmpeg` (via `ffmpeg-python` or subprocess), OpenCV |
+| SRT parsing | `pysrt` |
+| OCR (Path B) | PaddleOCR or EasyOCR; vision model API as an upgrade |
+| Spelling | `pyspellchecker` / `symspellpy` / `language_tool_python` |
+| LLM | Anthropic API (`anthropic` Python SDK) |
+| Config | `pyyaml` |
+| Report | Markdown first, then `python-docx` or `reportlab` |
+| CLI | `typer` or `argparse` |
+| Tests | `pytest` |
+
+---
+
+## 11. Suggested repo structure
+
+```
+video-qc-bot/
+├── README.md
+├── config.yaml
+├── glossary.txt
+├── rules.yaml
+├── requirements.txt
+├── clients/
+│   └── example_client.yaml
+├── data/
+│   ├── test_videos/
+│   └── clickup_export.csv
+├── src/
+│   ├── main.py                # CLI entry point
+│   ├── models.py              # Caption, Issue dataclasses
+│   ├── inputs/
+│   │   ├── srt_loader.py
+│   │   └── ocr_loader.py
+│   ├── checks/
+│   │   ├── too_short.py
+│   │   ├── spelling.py
+│   │   └── punctuation.py
+│   ├── report/
+│   │   ├── screenshots.py
+│   │   └── builder.py
+│   └── utils/
+│       ├── cache.py
+│       └── llm.py
+├── reports/
+└── tests/
+    ├── test_too_short.py
+    ├── test_spelling.py
+    └── fixtures/
+```
+
+---
+
+## 12. Build plan (milestones)
+
+### Milestone 1: Skeleton + too-short check
+- [ ] Set up repo, virtual env, `requirements.txt`
+- [ ] Define `Caption` and `Issue` models
+- [ ] Build SRT loader
+- [ ] Build too-short check with config and whitelist
+- [ ] CLI: `python -m src.main video.mp4 --srt captions.srt`
+- [ ] Print issues to the terminal
+- [ ] Unit tests for the too-short rules
+
+### Milestone 2: Spelling
+- [ ] Integrate spellchecker
+- [ ] Add glossary and forced-spelling support
+- [ ] Tests with real examples from ClickUp
+
+### Milestone 3: Report
+- [ ] Extract screenshots at issue timestamps
+- [ ] Markdown report with summary and issue table
+- [ ] Appendix with full transcript
+
+### Milestone 4: Punctuation with the LLM
+- [ ] Prompt with rules and real examples
+- [ ] Windowed context, batching, JSON parsing, caching
+- [ ] Confidence threshold
+- [ ] Run against the test set and record results
+
+### Milestone 5: Burned-in caption support (if needed)
+- [ ] Frame sampling and caption-region cropping
+- [ ] OCR plus grouping into captions
+- [ ] Change detection to skip unchanged frames
+- [ ] Compare OCR captions to the SRT when both exist
+
+### Milestone 6: Testing and tuning
+- [ ] Run on past videos, compare against my ClickUp comments
+- [ ] Measure **recall** (how many real issues it caught) and **precision** (how many flags were real)
+- [ ] Adjust rules, thresholds, and exceptions
+- [ ] Decide which check types are trustworthy enough to rely on
+
+### Milestone 7 (V2): Color consistency
+- [ ] Shot-change detection (PySceneDetect)
+- [ ] Per-shot metrics: average luminance, white balance, saturation, clipped highlights, crushed blacks
+- [ ] Flag shot-to-shot jumps above a threshold
+- [ ] Optional vision-model commentary on flagged shots
+
+### Milestone 8 (V2): Creative direction
+- [ ] Write the brief or style guide as structured input
+- [ ] Vision-model pass on sampled frames checked against the brief
+
+### Milestone 9 (V2): Integrations and UI
+- [ ] ClickUp API: pull comments, post findings
+- [ ] Simple web or desktop UI to pick a file and view the report
+
+---
+
+## 13. Testing and evaluation
+
+**Test set:** 5–10 past videos with my actual ClickUp comments as ground truth.
+
+**Metrics:**
+- **Recall** = issues the bot found ÷ issues I originally commented on
+- **Precision** = real issues ÷ everything the bot flagged
+- **False positive rate** per video (aim for a number I can live with, e.g. under 10 flags that I have to dismiss per video)
+
+**Process:**
+1. Run the bot on each test video.
+2. Compare its list to my comments by timestamp (± 1–2 seconds).
+3. Label each bot flag as true positive, false positive, or "valid but I'd never comment on it."
+4. Group the false positives by cause and fix the rules.
+5. Repeat until stable.
+
+**Tuning levers:** minimum word count, exception rules, glossary size, LLM confidence threshold, prompt examples.
+
+---
+
+## 14. Risks and how to handle them
+
+| Risk | Mitigation |
+|---|---|
+| Too many false positives, so I stop using it | Start cautious (high confidence only), tune with the test set, add exceptions |
+| OCR misreads text and creates fake spelling errors | Mark OCR-derived issues as lower confidence; prefer SRT when available |
+| Brand names flagged as typos | Maintain `glossary.txt`, load per client |
+| LLM output is not valid JSON | Strict "JSON only" prompt, safe parsing, skip and log failures |
+| API cost grows on long videos | Cache results, batch windows, only send captions that pass cheap checks first |
+| Color judgments differ from my eye | Use measured metrics, not model opinions; treat as "flag for me to review" |
+| Different clients have different rules | Per-client config files |
+
+---
+
+## 15. Questions to answer before or during Milestone 1
+
+1. Do I get an SRT/VTT from the editors, or is it burned-in only?
+2. What is the exact minimum word count per client (2 or 3)?
+3. What language(s) are the captions in?
+4. What video lengths and volumes (per day/week) should this handle?
+5. Where will I run it: my own machine only, and with what hardware (matters for local OCR)?
+6. Which report format do I prefer to read: Markdown, Word, or PDF?
+7. Can I export my ClickUp comments now so we can categorize them?
+
+---
+
+## 16. Instructions for Claude when coding this project
+
+Paste this section at the start of a coding session:
+
+> I'm building the "Video QC Bot" described in this plan. Work milestone by milestone, starting with Milestone 1. Keep code modular so checks are independent of where captions come from. Use dataclasses for `Caption` and `Issue`. Write unit tests for every rule-based check. Keep all thresholds and rules in config files, not hardcoded. Ask me before adding new dependencies. After each milestone, summarize what works and what's next.
+
+---
+
+## 17. Build phases (current) and decisions log
+
+The build now follows four phases from the kickoff prompt. Where the prompt and this plan disagree, the prompt wins.
+The report document, color checks, OCR, the ClickUp API and any UI are on hold until after Phase 4.
+
+| Phase | Scope | Status |
+|---|---|---|
+| 1. Foundation | Repo, venv, config, data prep from the xlsx, timestamp parser, models, SRT loader, too-short / phrase-break check, CLI, tests | **Done (2026-10-12)** |
+| 2. Spelling, capitalization, spacing | pyspellchecker + glossary.txt, forced spellings, rule-based checks from rules.yaml, client rules | **Done (2026-10-12)** |
+| 3. Punctuation via Anthropic API | Windowed prompts (Section 7.4), JSON-only output, confidence threshold, caching, batching, key from `ANTHROPIC_API_KEY` | **Done (2026-10-12)**, tested with a fake API only; first live run pending |
+| 4. Whisper transcript vs captions | faster-whisper (CPU, int8), cached transcripts, glossary as initial_prompt, alignment, wrong/missing/extra/early-word flags | **Done (2026-10-12)**, tested on a synthetic sample video; real-video run pending |
+
+### Machines
+- Develop on Windows (Lenovo ThinkPad), run on a MacBook (specs to come). All code is cross-platform: pathlib everywhere,
+  UTF-8 for every text file, ffmpeg found with `shutil.which` and called with argument lists, no PyTorch.
+- Machine-specific settings live in the `machine:` block of `config.yaml` (Whisper model size, cpu_threads, Tesseract path).
+
+### Decisions made in Phase 1
+- **Python 3.12**, virtual environment in `.venv/`. Versions are pinned in `requirements.txt`.
+- **Dependencies:** PyYAML, openpyxl (approved for reading the xlsx), pytest. The SRT parser uses only the standard
+  library, so `pysrt` was not needed.
+- **Data source:** `data/QC_Review_Analysis_Jun-Oct_2026.xlsx` replaces `clickup_export.csv`. `scripts/prepare_data.py`
+  generates `rules.yaml` (17 rules), `clients/<CLIENT>.yaml` (10 clients), `data/examples.csv` (59 examples) and
+  `data/exceptions.yaml` (5 entries). Rerunning keeps each client's hand-written `overrides:` block.
+- **Client codes are normalized:** `2CS` becomes `E2CS`. Codes that aren't E+number+letters (`S_UP`, `disc_Echo`) are only upper-cased.
+- **Timestamps:** the data has frame numbers up to 59, so some timelines are 60 fps. `config.yaml` sets `timecode.fps: 30`.
+  `prepare_data.py` switches a timestamp to 60 fps when its frame field is 30 or more. Semicolon timecodes are converted as
+  true drop-frame (29.97 or 59.94). A bare number like `35-36` is rejected as ambiguous rather than guessed.
+- **Too-short check also checks time on screen.** Real comments ("the" came for few frames, "hormonal development" passing
+  too fast) are about duration, so `min_duration_sec` (0.5 s) sits next to `min_words` (2). A caption that only flashes
+  by is flagged even if an exception would otherwise apply.
+- **New issue type `phrase_break`:** a caption ending on a dangling word ("...turn the"). A second rule, for short fragments
+  with no punctuation ("so you even", E8D), is **off by default** (`fragment_max_words: 0`) because many social styles use
+  2–3 word captions on purpose. Switch it on per client.
+- **Exceptions:** last caption of a segment (end of file, or a gap of 2.0 s or more after it), whitelisted one-word captions,
+  and a gap of 1.5 s or more before *or* after the caption. All configurable.
+- **Merge suggestions:** prefer the neighbour that completes the sentence. Two fragments in a row are merged with each other.
+  No merge is suggested across a gap over 1.0 s or when the result would exceed 6 s / 12 words.
+- **CLI:** `python -m src.main --srt file.srt --client E8D` (plus `--json`). The video file argument comes back in Phase 4.
+- **YAML gotcha:** unquoted `yes`/`no`/`on` load as booleans. `config.yaml` quotes all list words, and the check raises a
+  clear error if it gets a boolean.
+- **Punctuation model:** `config.yaml` names `claude-sonnet-5-5` as a placeholder. Confirm it in Phase 3.
+
+### Decisions made in Phase 2
+- **pyspellchecker 0.9.1** (pure Python) over symspellpy. Its word list loads in about 0.3 s and the checks run 35 minutes
+  of captions (1,200) in about 1 s. Its rarest entries are often junk ("heth"), all at a count of 50, so they are never suggested.
+- **Three new checks, four new issue types:** `spelling` (unknown words, near-misses of forced glossary spellings, letters used
+  as digits), `repeated_word`, `capitalization`, `spacing`. Each is independent of the caption source and has its own block in
+  `config.yaml`. Every check takes `(captions, settings, context)`; the context carries the glossary and the word list.
+- **Glossary format:** one term per line, `=` prefix for a forced exact spelling (`=Mark McGwire`). A client file can add
+  its own lines under `glossary:`. `prepare_data.py` now keeps every key in a client file except `client`, `project`, `notes`.
+- **`extra_words.txt`** (new file) holds everyday words missing from pyspellchecker's list. About half of a sample of modern
+  words were missing (app, selfie, influencer, playlist). Kept separate from the glossary because Phase 4 sends the glossary
+  to Whisper, which only accepts a short prompt.
+- **Forced spellings catch real-word lookalikes:** "McGuire" is in the word list, so only the glossary can catch it as a
+  misspelling of "McGwire". Common words inside forced phrases ("Mark") are ignored for this.
+- **False-alarm controls:** unknown capitalized words are `low` severity ("a name to add to the glossary?"). The
+  mid-sentence-capital rule only looks at very common words (frequency 100,000 or more: "That", "There") and skips capitals
+  next to other capitals ("Warren Buffett"). A word one typo away from a real word is reported as a misspelling, not as two
+  glued words. `tests/fixtures/clean_sample.srt` (names, brands, numbers, links) must produce only the two low name questions.
+- **E8D** gets `allow_stylized_lowercase: true` in `clients/E8D.yaml`: lowercase "i", months and glossary names are not
+  flagged, but broken mixed case like "realM" still is.
+- **Caption-start capitals** (E3RK: do not capitalize "there" at the start of a caption that continues a sentence) are off by
+  default (`check_caption_starts: false`), because many styles capitalize every caption.
+- **`may` and `march`** are not flagged in lowercase (common words). Capitalized, they are never flagged.
+- **Every check accepts `min_confidence`** in config; lower-confidence issues are dropped.
+- **Real-example coverage:** of the 41 spelling and punctuation rows in `data/examples.csv`, 17 are caught by Phase 2 checks
+  (tested in `tests/test_real_examples.py`). The other 24 are assigned to Phase 3 (commas, full stops, possessives), Phase 4
+  (real words wrong for the audio, missing words) or marked as not detectable from text (title capitals, client style
+  preferences, layout), each with its reason. New spreadsheet rows make that test fail until they're classified.
+- **Not built (out of Phase 2's text-only reach):** title capitalization (the SRT doesn't mark titles), and a rule for
+  lowercase sentence starts (left to the Phase 3 punctuation pass).
+
+### Decisions made in Phase 3
+- **Model `claude-sonnet-5-5`** (config `checks.punctuation.model`). The original plan named `claude-sonnet-4-6`; Sonnet 5.5
+  is the current Sonnet in the same tier and is cheaper ($2 / $10 per million input / output tokens versus $3 / $15).
+  `claude-opus-5-5` ($4 / $20) is the stronger option if quality needs it.
+- **SDK `anthropic==1.13.0`**, all its dependencies pinned. They ship wheels for Windows, macOS Intel and Apple Silicon;
+  no PyTorch.
+- **Request shape:** effort `low` (recommended starting point for classification on Sonnet 5.5) with thinking left at
+  its default; `max_tokens` 16,000; structured outputs (`output_config.format` with a JSON schema) so replies are valid
+  JSON; the system prompt (rules, client rules, examples, glossary) is marked for prompt caching because it is identical
+  for every request in a run. The skeleton from Section 7.4 is kept, plus `target_id` so several windows fit in one request.
+- **Refusal fallback on by default** (`fallbacks: default`, beta `server-side-fallback-2026-07-01`, Claude API only): if a
+  safety classifier declines, the API reruns the request on a fallback model. A refusal that still comes back is
+  logged and skipped. Set `fallbacks: null` to switch it off.
+- **Batching:** 10 windows per request (`windows_per_request`). Each window is the target plus 2 captions before and 2 after,
+  with timings. The Message Batches API (50% cheaper, but results can take minutes to hours) was not used, because the
+  report should be ready by the time the manual QC pass ends.
+- **Caching:** answers are stored in `cache/punctuation.json`, keyed by a hash of the model, effort, prompt version, full
+  system prompt, and the window's caption texts and pauses (not absolute times). Reruns are free; editing one caption only
+  re-sends the windows that contain it. Failed captions are not cached, so they are retried next run.
+- **Failures never stop the run:** bad JSON, unknown target IDs, refusals, cut-off replies and API errors are logged as
+  warnings and the batch is skipped. An authentication or permission error stops the punctuation check (every request
+  would fail). Without `ANTHROPIC_API_KEY` the check is skipped with setup instructions for both systems; `--no-llm`
+  skips it on purpose.
+- **Prompt scope:** only full stops, commas, question marks, apostrophes, and capitals caused by a wrong full stop.
+  Rules from the `Full stops` and `Commas` areas of `rules.yaml`. Real examples are `punctuation`-category rows whose
+  text mentions a punctuation mark (9 rows), because that category in the sheet also holds capitalization and spacing
+  comments that Phase 2 already covers. To save output tokens, the model leaves the text fields empty for fine captions.
+- **Confidence:** `min_confidence: 0.6` drops answers; 0.8 or more is `medium` severity, the rest `low`.
+- **Cost estimate printed after each run** from `price_per_mtok` in config. Expected roughly 1 to 2 US cents per 10
+  captions, so well under $1 for a 30-minute video. Needs checking against a real run.
+- **Tests never call the real API:** `tests/conftest.py` removes `ANTHROPIC_API_KEY` for every test; the API is faked.
+
+### Decisions made in Phase 4
+- **Python 3.12 only** (was "3.11 or 3.12"): PyAV and numpy no longer publish wheels for 3.11.
+- **Pinned and checked on all three platforms** (Windows, macOS Intel, macOS Apple Silicon, Python 3.12) with a dry-run
+  install of the whole `requirements.txt` for each Mac type: faster-whisper 1.2.1, ctranslate2 4.8.2, rapidfuzz 3.14.6.
+- **onnxruntime held at 1.23.2:** it is the last version with macOS Intel wheels (1.24+ is Apple Silicon only). faster-whisper
+  uses it for the voice-activity filter. It can move up once the MacBook is known to be Apple Silicon.
+- **PyAV held at 18.1.0:** PyAV 19 removed an argument faster-whisper 1.2.1 passes, which crashed the first real run. The bot
+  also no longer uses faster-whisper's decoder: ffmpeg writes a 16 kHz mono WAV and the bot reads it with Python's `wave`.
+- **ffmpeg** installed on the Windows machine with `winget install ffmpeg` (Gyan.FFmpeg 9.0.2). `machine.ffmpeg_path` in config
+  can point to it if it isn't on PATH.
+- **Whisper settings** as specified: CPU, int8, word timestamps, VAD filter, beam size 1, model size from
+  `machine.whisper_model_size` (`base` default). Models download once into `models/`; later runs load them offline.
+- **Transcript cache:** `cache/transcripts/<sha256 of video>-<model>-<settings hash>.json`. Renaming a video keeps the cache;
+  changing the content, model, language, VAD, beam size or glossary prompt re-transcribes. CPU threads don't affect the key.
+- **Glossary → Whisper:** `initial_prompt = "Glossary: term, term."`, capped at 600 characters.
+- **Normalization (both sides):** lowercase, punctuation and apostrophes removed, numbers written in digits become words
+  ("40%" → "forty percent", "$2,500", ordinals, decimals; also Whisper's "40 %"), an `equivalents` table in config
+  (gonna/going to, ok/okay, alright/all right...), fillers dropped (um, uh, ah, er, hmm...). No new dependency for number words.
+- **Alignment:** a small edit-distance alignment written for this, not difflib. Spoken words at the window edges are
+  free, so words belonging to neighbouring captions aren't blamed on this one. On ties it prefers a wrong word over an
+  extra-plus-missing pair. rapidfuzz decides near-identical spellings (ratio of 85 or more, words of 4+ letters) count as the
+  same word. The window is the caption's time ±1 s. Spoken words that no caption accounts for and that are said while a
+  caption is on screen count as missing from that caption ("in the same direction" shown as "same").
+- **Four issue types**: `wrong_word`, `missing_word`, `extra_word` (marked "(repeated)" for duplicates), `caption_early`
+  (0.7 s or more early). Every message reads `caption says "X", audio sounds like "Y"` with the full heard line as the suggestion.
+- **Evidence rule:** wrong and missing words need every spoken word involved at probability 0.7 or higher. Extra words have
+  no spoken word, so the average probability of the two neighbours is used (the minimum missed a real case in the sample:
+  a 0.64 neighbour hid the extra "is").
+- **Not flagged on purpose:** stutters the caption leaves out ("to to"), captions mostly not spoken at all (titles, on-screen
+  text: under half the words heard), and words the spelling check already covers.
+- **Synthetic sample video** (`scripts/make_sample_video.py`, user's choice): Windows SAPI or macOS `say` reads 10 lines; the SRT
+  plants 6 real mistakes (Are/Or, missing "but", duplicate "to", extra "is", picked/peaked, caption 1.2 s early) plus a
+  title and 4 clean lines. With Whisper `base`: all 6 found, no false alarms, 38.6 s of video transcribed in about 5 s on the
+  i7-8650U. End-to-end test: `pytest --run-slow tests/test_sample_video.py`.
+- **Overlap with Phase 2:** a duplicated word is reported twice (text-only `repeated_word` and audio `extra_word`). Left as is
+  for now; the report milestone can merge issues on the same caption.
+
+### Open questions
+- Run on a real client video and its SRT (realistic voices, music, several speakers).
+- First live run of the punctuation check: confirm the cost and quality on a real caption file.
+- MacBook specs (sets `whisper_model_size` and `cpu_threads`).
+- Minimum words per client: every client uses 2 for now. Should any use 3?
+- Which clients should get the fragment rule (`fragment_max_words: 3`)? E8D is the only real example so far.
+- Should E3RK get `check_caption_starts: true`?
+- Start filling `glossary.txt` (and per-client `glossary:` lists, e.g. E7SS athlete names) with the names that come up.
+
+---
+
+## 18. First steps (today)
+
+1. Create the repo and virtual environment.
+2. Export ClickUp comments to `data/clickup_export.csv`.
+3. Answer the SRT-vs-burned-in question.
+4. Collect 3–5 sample videos plus their caption files if available.
+5. Start Milestone 1 with Claude.

@@ -1,0 +1,33 @@
+# Virtual environment
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Whisper / Hugging Face model caches
+models/
+.cache/
+huggingface/
+
+# Transcript and LLM caches
+cache/
+transcripts/
+*.transcript.json
+
+# Output
+reports/
+
+# Raw and generated data (QC exports, sample videos, examples.csv, exceptions.yaml)
+data/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Secrets
+.env

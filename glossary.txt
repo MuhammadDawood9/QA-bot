@@ -1,0 +1,7 @@
+# glossary.txt - words the spelling check must never flag (brand names, people, products, jargon).
+# Also passed to Whisper as a hint so it spells these terms correctly (Phase 4).
+#
+# Format: one term per line. Blank lines and lines starting with # are ignored.
+#   Danja                 plain term: accepted in any capitalization
+#   =Mark McGwire         "=" prefix: forced spelling, must appear exactly like this
+#   =YouTube              (so "Youtube" or "youtube" gets flagged)

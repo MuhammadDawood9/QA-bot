@@ -1,0 +1,61 @@
+# Pinned so the Windows dev machine and the macOS run machine install the same thing.
+# Python 3.12 (from Phase 4: av 19 and numpy 2.5 no longer support 3.11). Every package here ships wheels (or is pure Python) for
+# Windows x64, macOS Intel and macOS Apple Silicon. No PyTorch.
+
+# --- Phase 1 ---
+PyYAML==6.0.3          # config.yaml, rules.yaml, clients/*.yaml
+openpyxl==3.1.5        # scripts/prepare_data.py reads the QC review .xlsx
+et_xmlfile==2.0.0      # openpyxl dependency
+
+# --- Phase 2 ---
+pyspellchecker==0.9.1  # English word list for the spelling check (pure Python, no compiled parts)
+
+# --- Phase 3 ---
+anthropic==1.13.0      # Anthropic API for the punctuation check
+# anthropic's dependencies (pydantic_core and jiter have wheels for Windows, macOS Intel and Apple Silicon)
+annotated-types==0.8.0
+anyio==4.15.1
+docstring_parser==0.18.0
+h11==0.16.0
+httpcore2==2.13.1
+httpx2==2.13.1
+idna==3.20
+jiter==0.17.0
+pydantic==2.14.1
+pydantic_core==2.50.1
+sniffio==1.3.1
+truststore==0.10.4
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+
+# --- Phase 4 ---
+faster-whisper==1.2.1  # speech-to-text on the CPU (CTranslate2, no PyTorch)
+rapidfuzz==3.14.6      # word similarity when lining captions up with the transcript
+ctranslate2==4.8.2
+av==18.1.0             # used inside faster-whisper; 19.x removed an argument faster-whisper 1.2.1 passes
+# onnxruntime (voice-activity filter) is held at 1.23.2: it is the last version with wheels for
+# Intel Macs (1.24+ ships Apple Silicon only). Don't upgrade until the MacBook's chip is known.
+onnxruntime==1.23.2
+numpy==2.5.4
+tokenizers==0.23.3
+huggingface_hub==2.2.0  # downloads the Whisper model on first use
+hf-xet==1.7.0
+filelock==4.1.1
+fsspec==2026.9.0
+tqdm==4.70.1
+click==8.5.0
+coloredlogs==15.0.1
+humanfriendly==10.0
+pyreadline3==3.5.6 ; sys_platform == "win32"
+flatbuffers==25.12.19
+protobuf==7.36.2
+sympy==1.14.0
+mpmath==1.3.0
+
+# --- Tests ---
+pytest==9.1.1
+iniconfig==2.3.1
+packaging==26.3
+pluggy==1.6.0
+Pygments==2.21.0
+colorama==0.4.6 ; sys_platform == "win32"

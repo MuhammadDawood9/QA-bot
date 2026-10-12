@@ -1,0 +1,164 @@
+# Video QC Bot configuration.
+# Every threshold lives here. Per-client overrides go in clients/<CLIENT>.yaml
+# under "overrides:", using the same structure as the "checks:" block below.
+
+# --- Machine-specific settings: edit these when moving between machines ---
+machine:
+  whisper_model_size: base     # "base" while testing, "small" for real use
+  cpu_threads: 4               # faster-whisper threads; set to the MacBook's performance-core count
+  ffmpeg_path: null            # null = find "ffmpeg" on PATH; or the full path to the ffmpeg program
+  tesseract_path: null         # null = find "tesseract" on PATH (OCR milestone, not built yet)
+
+paths:
+  rules_file: rules.yaml
+  clients_dir: clients
+  glossary_file: glossary.txt
+  extra_words_file: extra_words.txt   # everyday words the spell checker's list is missing
+  examples_file: data/examples.csv
+  exceptions_file: data/exceptions.yaml
+  llm_cache_file: cache/punctuation.json   # cached API answers; delete it to force a fresh review
+  transcript_cache_dir: cache/transcripts  # one Whisper transcript per video (by file hash)
+  models_dir: models                       # Whisper models, downloaded on first use
+
+# Frame rate used to convert HH:MM:SS:FF timecodes (e.g. from ClickUp comments) to seconds.
+# Semicolon timecodes (HH;MM;SS;FF) are treated as drop-frame at 29.97 (fps 30) or 59.94 (fps 60).
+timecode:
+  fps: 30
+
+input:
+  mode: srt                    # srt only for now; ocr comes in a later milestone
+
+checks:
+  too_short:
+    enabled: true
+    min_words: 2               # fewer words than this = flagged
+    min_duration_sec: 0.5      # on screen for less than this = flagged ("came for few frames")
+    # One-word captions that are allowed (case and punctuation ignored).
+    # Keep words in quotes: unquoted yes / no / on / off are read by YAML as true / false.
+    whitelist: ["wow", "yes", "no"]
+
+    phrase_break:
+      enabled: true
+      # A caption that ends on one of these words leaves the phrase hanging ("...in the").
+      dangling_end_words: [
+        "a", "an", "the",
+        "of", "to", "in", "on", "at", "for", "with", "from", "by", "into", "onto", "about", "as",
+        "and", "but", "or", "nor", "so", "because", "if",
+        "my", "your", "his", "her", "our", "their", "its",
+      ]
+      # Short captions with no ending punctuation that run straight into the next caption
+      # ("so you even" -> next line). 0 = off. Social-media styles often use 2-3 word captions
+      # on purpose, so this is off by default and meant to be switched on per client.
+      fragment_max_words: 0
+      fragment_max_gap_sec: 0.3
+
+    exceptions:
+      last_of_segment: true      # last caption of the file, or followed by a gap >= segment_gap_sec
+      segment_gap_sec: 2.0
+      whitelist: true            # allow the whitelist above
+      isolated_by_gap: true      # gap before OR after >= isolation_gap_sec = intentional pause
+      isolation_gap_sec: 1.5
+      # Exceptions never excuse a caption that is on screen for less than min_duration_sec.
+
+    suggestion:
+      merge_max_gap_sec: 1.0         # only suggest merging with a neighbour this close
+      max_merged_duration_sec: 6.0
+      max_merged_words: 12
+
+  # Every check also accepts min_confidence: issues below it are dropped (default 0 = keep all).
+
+  spelling:
+    enabled: true
+    language: en
+    max_suggestions: 3
+    min_suggestion_frequency: 51   # the word list scores its junk entries 50; never suggest those
+    forced_max_distance: 2         # how far a word may be from a forced glossary spelling to be called a misspelling of it
+    lookalike_digits: true         # "2O26", "O%": letter O / l / I used as a digit
+    repeated_words:
+      enabled: true
+      across_captions_max_gap_sec: 1.0
+      # Doubles that are normal speech or grammar ("that that", "had had", "no no").
+      allowed: ["that", "had", "very", "really", "no", "bye", "ha", "haha", "so", "yeah", "go", "knock", "well"]
+
+  capitalization:
+    enabled: true
+    allow_stylized_lowercase: false   # true for clients who write in all lowercase on purpose (E8D)
+    check_mixed_case: true            # "realM", "THe"
+    # Always capitalized. "may" and "march" are also common words, so a lowercase one is not flagged.
+    proper_nouns: [
+      "January", "February", "March", "April", "May", "June", "July", "August",
+      "September", "October", "November", "December",
+      "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+    ]
+    ambiguous_lowercase: ["may", "march"]
+    mid_sentence_capitals:
+      enabled: true
+      # Only very common words count ("That", "There"), so names like "Warren" aren't flagged.
+      min_word_frequency: 100000
+      # Also check the first word of a caption that continues the previous caption's sentence.
+      # Off by default: many styles capitalize every caption. Useful for E3RK-style flowing text.
+      check_caption_starts: false
+      sentence_gap_sec: 2.0          # a pause this long starts a new sentence
+
+  spacing:
+    enabled: true
+    double_spaces: true
+    space_around_punctuation: true    # "foundation,and" and "word ,"
+    glued_words:
+      enabled: true
+      min_part_frequency: 100
+      # Words under 3 letters that may be one half of a glued pair ("andaccountability" has "and").
+      short_words: ["a", "i", "an", "to", "of", "in", "on", "at", "is", "it", "be", "we", "my", "so",
+                    "do", "go", "no", "up", "us", "or", "by", "me", "he", "if", "as", "am"]
+
+  # Punctuation is reviewed by Claude through the Anthropic API. It needs the ANTHROPIC_API_KEY
+  # environment variable; without it the check is skipped with a warning and the rest still run.
+  # Use --no-llm on the command line to skip it on purpose (no API calls, no cost).
+  punctuation:
+    enabled: true
+    model: claude-sonnet-5-5        # current Sonnet; claude-opus-5-5 is the stronger, pricier option
+    effort: low                     # low is the recommended start for classification; raise only if quality needs it
+    max_tokens: 16000               # per request; includes the model's thinking, not just the JSON
+    fallbacks: default              # if a safety classifier declines, the API retries on a fallback model. null = off
+    window_before: 2                # captions of context before the one being reviewed
+    window_after: 2                 # and after it
+    windows_per_request: 10         # captions reviewed per API call; more = fewer calls, longer replies
+    min_confidence: 0.6             # drop answers the model is less sure of than this
+    request_timeout_sec: 120
+    max_retries: 3                  # the SDK retries rate limits, server errors and network errors
+    rule_areas: ["Full stops", "Commas"]     # which rules.yaml areas go into the prompt
+    example_categories: ["punctuation"]      # which data/examples.csv rows go into the prompt
+    # ...and only rows about punctuation marks (the "punctuation" category also holds capitals and spacing,
+    # which the Phase 2 checks already cover).
+    example_filter: "comma|full stop|question mark|apostrophe|'s\\b"
+    max_examples: 40
+    # US dollars per million tokens, only for the cost estimate the CLI prints. Update if prices change.
+    price_per_mtok: {input: 2.0, output: 10.0, cache_write: 2.5, cache_read: 0.2}
+
+  # Caption text compared with the spoken audio (faster-whisper on the CPU). Runs only when a
+  # video is given: python -m src.main --srt captions.srt --video video.mp4
+  # Model size and CPU threads are in machine: at the top.
+  transcript:
+    enabled: true
+    device: cpu
+    compute_type: int8
+    language: en
+    beam_size: 1
+    vad_filter: true                 # skip silence and music, which reduces made-up words
+    initial_prompt_max_chars: 600    # glossary terms passed to Whisper (it only reads ~224 tokens)
+    window_padding_sec: 1.0          # compare each caption with words spoken from 1 s before to 1 s after it
+    min_word_probability: 0.7        # only flag when Whisper heard the word(s) at least this clearly
+    same_word_min_ratio: 85          # spellings this similar count as the same word ("hourse"/"hours")
+    min_matched_fraction: 0.5        # skip captions where under half the words are heard (titles, on-screen text)
+    early_threshold_sec: 0.7         # flag a caption on screen this long before its first word is said
+    edge_slack_sec: 0.2
+    ignore_spoken_repeats: true      # a stutter ("to to") the caption leaves out is not a caption mistake
+    # Ignored on both sides. Quoted: some short words are special in YAML.
+    fillers: ["um", "umm", "uh", "uhh", "ah", "ahh", "er", "erm", "hmm", "mm", "mhm"]
+    # Different ways of writing the same spoken words.
+    equivalents: {
+      "ok": "okay", "alright": "all right", "gonna": "going to", "wanna": "want to",
+      "gotta": "got to", "kinda": "kind of", "sorta": "sort of", "cuz": "because",
+      "til": "until", "till": "until", "mr": "mister", "mrs": "missus", "dr": "doctor",
+      "vs": "versus", "yall": "you all",
+    }

@@ -1,0 +1,85 @@
+# extra_words.txt - everyday words missing from the spell checker's English word list.
+# Unlike glossary.txt (names, brands, exact spellings, also sent to Whisper), this is plain
+# vocabulary. One word per line, any capitalization; lines starting with # are ignored.
+# Add a word here when the spelling check keeps flagging something that is a normal word.
+
+# internet and social media
+app
+apps
+podcasts
+vlog
+vlogs
+vlogger
+emoji
+emojis
+selfie
+selfies
+hashtag
+hashtags
+livestream
+livestreams
+livestreaming
+influencer
+influencers
+youtuber
+youtubers
+shoutout
+shoutouts
+unboxing
+retweet
+subreddit
+memes
+collab
+collabs
+merch
+playlist
+playlists
+gameplay
+esports
+signup
+preorder
+preorders
+webinar
+webinars
+ebook
+ebooks
+chatbot
+chatbots
+lol
+omg
+btw
+b-roll
+texting
+texted
+googled
+
+# business and tech
+onboarding
+upsell
+upselling
+rebrand
+rebranding
+rebranded
+dropshipping
+ecommerce
+fintech
+blockchain
+crypto
+cryptocurrency
+bitcoin
+nft
+nfts
+metaverse
+smartphone
+smartphones
+smartwatch
+wifi
+telehealth
+lifehack
+lifehacks
+
+# everyday
+millennials
+lockdown
+lockdowns
+covid
