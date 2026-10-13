@@ -76,7 +76,13 @@ def load_rules(path: Path) -> list[Rule]:
     except (OSError, yaml.YAMLError) as exc:
         log.warning("%s unreadable (%s); nothing is ignored", path, exc)
         return []
-    entries = data.get("ignore") if isinstance(data, dict) else None
+    return parse_rules(data.get("ignore") if isinstance(data, dict) else None, str(path))
+
+
+def parse_rules(entries, where: str, client: str | None = None) -> list[Rule]:
+    """Rules from a list of dicts (ignore.yaml's "ignore:", or a client file's). `client` fixes
+    the client of every rule (a client file's rules only ever apply to that client)."""
+    path = where
     if not entries:
         return []
     if not isinstance(entries, list):
@@ -102,7 +108,10 @@ def load_rules(path: Path) -> list[Rule]:
                     type=str(entry["type"]).strip().lower() if entry.get("type") else None,
                     text=str(entry["text"]) if entry.get("text") not in (None, "") else None,
                     video=str(entry["video"]) if entry.get("video") else None, at=at, line=n)
-        if rule == Rule(line=n):
+        if client:
+            rule = Rule(client=str(client).upper(), type=rule.type, text=rule.text, video=rule.video, at=rule.at,
+                        line=n)
+        if rule == Rule(line=n) or (client and rule == Rule(client=rule.client, line=n)):
             log.warning("%s: rule %d matches every flag; skipped (give at least a type, text, video or time)",
                         path, n)
             continue

@@ -910,9 +910,67 @@ Not built on purpose: ClickUp sync, creative-direction checks, PDF reports.
   `overexposed_high_factor` 2.5, `cast_medium_factor` 1.6, `flat_luma_range` [60, 200], `face_min_score` 0.8.
   `face_min_score` joins the color cache key only when changed, so existing caches stay valid.
 
+- **Client data layout** (Phase 2): the client file stays `clients/<CODE>.yaml` (so nothing that reads it changes);
+  a folder `clients/<CODE>/` next to it holds `notes.md` (what an import couldn't map, with its source) and
+  `sources/` (a dated copy of every imported file). Backups in `backups/clients/<CODE>/` and `backups/color/`
+  (newest 50 kept per file), the changelog in `changelog.csv` (time, user, computer, file, client, action, one-line
+  summary of what changed). Paths in config.yaml (`backups_dir`, `changelog_file`).
+- **New keys in a client file**: `name` (display name in menus), `language` (spelling + Whisper language unless the
+  client's overrides name one), `rules` (do/don't text, for people; no check reads it yet), `examples` (wrong ->
+  correct, reference), `ignore` (flags hidden for this client, same fields as ignore.yaml; the engine applies them with
+  ignore.yaml). Old files without them behave exactly as before. A client file's ignore rule with no field besides
+  client is refused (it would hide every flag); ignore.yaml keeps its old behaviour.
+- **Color settings from the client editor go into color.yaml** (`clients: <CODE>:`), keeping the commented defaults
+  above it byte for byte, so color stays in one file (Phase 1).
+- **Template**: generated on demand (Client > Get client template) instead of a binary in the repo. Sheets Info,
+  Rules, Glossary, Exceptions, Examples, Checks; grey rows starting "e.g." are examples and are skipped on import.
+  Info also takes "Caption area" (full / bottom / middle / top / four fractions). Checks rows: check, setting
+  (dotted for nested, e.g. `phrase_break.fragment_max_words`), value; `color` rows go to color.yaml (`skip` takes a
+  comma list). Exceptions rows with a type/text/video/time become ignore rules; a row with only a note is a note.
+- **QC review workbook import** reuses the parsing moved from scripts/prepare_data.py into
+  `src/clients/workbook.py` (the script imports it from there). For the client code typed in the dialog it takes
+  the "Client rules" row (name, the rule text, plus what that text says: minimum words, lowercase style), "Caption
+  mistakes" rows (examples; a capitalized correction in a spelling note becomes an *unticked* forced-spelling
+  candidate) and "Accepted exceptions" (notes). Codes are normalized on both sides (2CS = E2CS). "All QC notes" is
+  not imported (it is evaluation data).
+- **CSV**: a CSV saved from a template sheet (recognized by its header), or rows in the QC notes / client rules
+  format; anything else becomes notes.
+- **PDF**: text extracted locally with pypdf; heuristics for minimum words (several phrasings), caption position
+  (bottom / middle / top -> a preset region), language, lowercase style, lists under a glossary/names heading,
+  "spell it as 'X'" (forced spelling), lines that start like a rule (do, don't, never, always, avoid, must...).
+  Names in quotes are offered unticked. Every other line becomes a note. Scanned PDFs (no text) give a message.
+- **Review**: one dialog lists every finding grouped by kind, each ticked or not, double-click to edit (as text:
+  `wrong -> correct`, `setting = value`, `type=spelling; text=...`), with where it came from. Values the user typed
+  or changed in the client dialog win over values found in files; untouched defaults lose (the PDF's "3 words" beats
+  the default 2). A second value for a single setting is shown unticked. Nothing is written before "Save client".
+- **"Read the PDF with Claude"** only appears when `client_import.allow_claude: true` is set by an admin AND the PC
+  has ANTHROPIC_API_KEY. Not in config.yaml by default (= off). Its findings are added unticked.
+- **Edit keeps the code fixed** (renaming a client would orphan reports, backups and color settings); a new code
+  is "Add new client".
+- **Validation**: code 2-20 of A-Z 0-9 _ after normalizing; display name 1-100 chars; language one of en es fr de
+  pt it; minimum words 1-10; caption area inside the frame; color types and check names from fixed lists;
+  exceptions need a type, text, video or time.
+
 ### Phase 1: Simplify and expose settings — done (2026-10-13)
 - Punctuation off and hidden as above; tests updated: the default CLI run never mentions the API; with the check
   switched on and no key it is still skipped with the old warning.
 - color.yaml as above, packaged with the app and copied to the user data folder like the other editable files.
 - Kept unchanged: capitalization, spacing, spelling, repeated words, every color check.
 - New tests: `tests/test_settings_phase1.py`.
+
+### Phase 2: "Add / edit client" from the mascot menu — done (2026-10-13)
+- Menu: Client > clients with their display names, Add new client..., Edit client..., Get client template.
+- `src/clients/` (no Qt, tested): `model.py` (findings, validation, client file <-> findings, change summary),
+  `importers.py` (template, QC workbook, CSV, PDF, optional Claude), `store.py` (save with duplicate check, backup,
+  color.yaml block, notes, source copies, changelog), `workbook.py` (shared with prepare_data). `src/utils/safe_io.py`:
+  atomic write (temp file + rename, retried on Windows sharing errors), backups, changelog.
+- `src/app/client_dialogs.py`: client dialog (code, display name, language, minimum words, caption area, notes, a
+  drop zone / file picker), the review dialog, and the caption area picker (frames every 2 s from the first minute,
+  a slider, drag a rectangle; saved as fractions).
+- New dependency: **pypdf 6.20.1** (pure Python, no dependencies, one wheel for every OS): local PDF text.
+- Tests: `tests/test_clients.py` (template round trip, workbook incl. the real one when present, CSV, PDF from a
+  generated PDF, validation, duplicates, backups, changelog, engine uses the client's ignore rules and language,
+  the review dialog, the add dialog, the rectangle picker).
+- **Untested on real material:** no real client style-guide PDF was available; the PDF heuristics were tested on
+  generated text PDFs only. The caption area picker was tested headless (drag maths, frame loading); the dragging
+  itself needs the manual steps.

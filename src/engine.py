@@ -184,6 +184,9 @@ def run_qc(video_path: str | Path | None, client: str | None = None,
 def _ignored(issues: list[Issue], config: dict, client: dict, video: Path | None) -> tuple[list[Issue], list[Issue]]:
     """Issues minus the ones ignore.yaml hides; (kept, hidden)."""
     rules = ignore.load_rules(ignore.ignore_file(config))
+    code = client.get("client")
+    if code and client.get("ignore"):
+        rules += ignore.parse_rules(client["ignore"], f"clients/{code}.yaml", client=code)
     if not rules:
         return issues, []
     kept, hidden = ignore.apply(issues, rules, client.get("client"), video)
@@ -276,6 +279,11 @@ def build_context(config: dict, client: dict) -> CheckContext:
     real examples and API cache location."""
     glossary = Glossary.load(resolve_path(config, "glossary_file"), extra=client.get("glossary") or [])
     settings = {name: check_settings(config, client, name) for name in CHECKS}
+    language = client.get("language")
+    if language:                  # the client's language, unless its overrides name one for the check
+        for name in ("spelling", "transcript"):
+            if "language" not in ((client.get("overrides") or {}).get(name) or {}):
+                settings[name] = {**settings[name], "language": str(language)}
     language = settings.get("spelling", {}).get("language", "en")
     extra_words = load_word_list(resolve_path(config, "extra_words_file"))
     ocr = ocr_settings(config, client)

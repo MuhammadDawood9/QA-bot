@@ -19,6 +19,11 @@ transcripts/
 
 # Output
 reports/
+
+# Client edits made from the app: backups, changelog, imported source files
+backups/
+changelog.csv
+clients/*/sources/
 mac_check_*/
 
 # Raw and generated data (QC exports, sample videos, examples.csv, exceptions.yaml)

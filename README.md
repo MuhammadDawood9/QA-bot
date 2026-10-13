@@ -220,7 +220,15 @@ python -m src.app --demo     # also a menu to preview the four mascot states
   - *Check a video...* and *Cancel check*
   - *Client*: the client the next video is checked for. With *Guess from the file name* on, a code in the
     file name wins ("E8D_reel_03.mp4" is E8D); otherwise the client you picked last is used.
-  - *Checks*: switch each check on or off. *Punctuation (AI, costs money)* is off until you switch it on.
+  - *Client > Add new client... / Edit client...*: code, display name, language, minimum words per caption,
+    the caption area (*Pick on a video frame...*: drag a rectangle on a frame of a sample video), notes, and
+    optional files to import: the client template, the QC review workbook, a .csv or a style guide .pdf (read on
+    this PC). Everything found is listed for review, editable, with a tick box; nothing is saved until *Save
+    client*. Each save backs up the previous file and adds a line to `changelog.csv` (who, when, what).
+  - *Client > Get client template*: saves `client_template.xlsx` (sheets Info, Rules, Glossary, Exceptions,
+    Examples, Checks) to fill in and import.
+  - *Checks*: switch each check on or off. *Punctuation (AI, costs money)* only appears when an admin has switched
+    the API check on in `config.yaml`.
   - *Open last report*, *Open reports folder*, *Settings...* (reports folder, open the report when done,
     notifications, guess the client), *Start at login*, *Quit*.
 - On start it checks that ffmpeg is installed and, if not, shows how to install it on your system.

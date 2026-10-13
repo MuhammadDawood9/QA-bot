@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.clients.workbook import clean, client_for, find_sheet, read_rows  # noqa: E402,F401
 from src.config import load_config, load_yaml, normalize_client_code, resolve_path  # noqa: E402
 from src.utils.timecode import TimecodeError, infer_fps, parse_range  # noqa: E402
 
@@ -44,15 +45,8 @@ GLOSSARY_STARTER = """\
 #   =YouTube              (so "Youtube" or "youtube" gets flagged)
 """
 
-_TASK_CLIENT = re.compile(r"#\s*([A-Za-z0-9_]+)")
 _LEADING_TIME = re.compile(r"^(\d+(?::\d+)+)\s+")
 _EXAMPLE_SPLIT = re.compile(r";\s+(?=[A-Za-z0-9_]+:)")
-
-
-def clean(value) -> str:
-    if value is None:
-        return ""
-    return str(value).replace("\xa0", " ").strip()
 
 
 def show(path: Path) -> Path:
@@ -61,24 +55,6 @@ def show(path: Path) -> Path:
         return path.relative_to(ROOT)
     except ValueError:
         return path
-
-
-def find_sheet(workbook, prefix: str):
-    for name in workbook.sheetnames:
-        if name.lower().startswith(prefix.lower()):
-            return workbook[name]
-    raise SystemExit(f"error: no sheet starting with {prefix!r}. Sheets: {workbook.sheetnames}")
-
-
-def read_rows(sheet) -> list[dict]:
-    rows = sheet.iter_rows(values_only=True)
-    header = [clean(h) for h in next(rows)]
-    out = []
-    for row in rows:
-        record = {h: clean(v) for h, v in zip(header, row) if h}
-        if any(record.values()):
-            out.append(record)
-    return out
 
 
 def slug(text: str) -> str:
@@ -141,14 +117,6 @@ def build_client_files(rows: list[dict], clients_dir: Path) -> list[str]:
         write_text(path, header + dump_yaml(body))
         written.append(code)
     return written
-
-
-def client_for(row: dict) -> str:
-    code = row.get("client") or ""
-    if not code:
-        match = _TASK_CLIENT.search(row.get("task_name", ""))
-        code = match.group(1) if match else ""
-    return normalize_client_code(code) or ""
 
 
 def build_examples(rows: list[dict], default_fps: float) -> tuple[list[dict], list[str]]:

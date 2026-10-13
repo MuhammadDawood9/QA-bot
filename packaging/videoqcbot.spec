@@ -32,7 +32,7 @@ binaries = collect_dynamic_libs("ctranslate2") + collect_dynamic_libs("onnxrunti
 
 # Modules the code imports inside functions, which PyInstaller's scan can miss.
 hiddenimports = collect_submodules("src") + ["faster_whisper", "rapidocr_onnxruntime", "spellchecker", "docx",
-                                             "anthropic", "openpyxl", "platformdirs", "rapidfuzz"]
+                                             "anthropic", "openpyxl", "platformdirs", "rapidfuzz", "pypdf"]
 
 a = Analysis(
     [str(ROOT / "run_app.pyw")],

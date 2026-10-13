@@ -16,6 +16,8 @@ paths:
   examples_file: data/examples.csv
   ignore_file: ignore.yaml            # flags you decided are fine (see the file)
   color_file: color.yaml              # color grading thresholds and per-client color overrides
+  backups_dir: backups                # previous versions of client files and color.yaml, one per save
+  changelog_file: changelog.csv       # who changed which client file, when, from which PC
   exceptions_file: data/exceptions.yaml
   llm_cache_file: cache/punctuation.json   # cached API answers; delete it to force a fresh review
   transcript_cache_dir: cache/transcripts  # one Whisper transcript per video (by file hash)

@@ -110,12 +110,20 @@ class CompanionApp:
         clients.addSeparator()
         group = QActionGroup(clients)
         current = self.settings.get("last_client")
+        names = self.client_names()
         for code in [None, *self.clients]:
-            action = clients.addAction("Default rules (no client)" if code is None else code)
+            name = names.get(code)
+            label = "Default rules (no client)" if code is None else (f"{code}  ({name})" if name and name != code
+                                                                    else code)
+            action = clients.addAction(label)
             action.setCheckable(True)
             action.setChecked(code == current)
             action.setActionGroup(group)
             action.triggered.connect(lambda _=False, c=code: self.settings.set("last_client", c))
+        clients.addSeparator()
+        clients.addAction("Add new client...", self.add_client)
+        clients.addAction("Edit client...", self.edit_client).setEnabled(bool(self.clients))
+        clients.addAction("Get client template", self.save_client_template)
 
         skins = menu.addMenu("Skin")
         skin_group = QActionGroup(skins)
@@ -286,6 +294,70 @@ class CompanionApp:
         if self.tray is not None and self.settings.get("notifications"):
             icon = QSystemTrayIcon.MessageIcon.Warning if error else QSystemTrayIcon.MessageIcon.Information
             self.tray.showMessage(title, message, icon, 8000)
+
+    # --- clients ---------------------------------------------------------------------------
+
+    def client_store(self):
+        from src.clients.store import ClientStore
+
+        return ClientStore(self.config)
+
+    def client_names(self) -> dict:
+        try:
+            return self.client_store().names()
+        except OSError as exc:
+            log.warning("couldn't read the client names: %s", exc)
+            return {}
+
+    def refresh_clients(self) -> None:
+        self.config = load_config()
+        self.clients = known_clients(self.config)
+
+    def add_client(self) -> None:
+        from src.app.client_dialogs import ClientDialog
+
+        dialog = ClientDialog(self.client_store(), self.config, None, last_folder=self.settings.get("last_folder"))
+        if dialog.exec() and dialog.saved_code:
+            self.refresh_clients()
+            self.settings.set("last_client", dialog.saved_code)
+            self.notify("Client added", f"{dialog.saved_code} is saved and selected.")
+
+    def edit_client(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+
+        from src.app.client_dialogs import ClientDialog
+
+        self.refresh_clients()
+        if not self.clients:
+            return
+        current = self.settings.get("last_client")
+        names = self.client_names()
+        labels = [f"{c}  ({names[c]})" if names.get(c, c) != c else c for c in self.clients]
+        start = self.clients.index(current) if current in self.clients else 0
+        label, ok = QInputDialog.getItem(None, "Edit client", "Client:", labels, start, False)
+        if not ok:
+            return
+        code = self.clients[labels.index(label)]
+        dialog = ClientDialog(self.client_store(), self.config, code, last_folder=self.settings.get("last_folder"))
+        if dialog.exec() and dialog.saved_code:
+            self.refresh_clients()
+            self.notify("Client saved", f"{code}: changes saved (previous version backed up).")
+
+    def save_client_template(self) -> None:
+        import platformdirs
+
+        from src.clients.importers import TEMPLATE_NAME, make_template
+
+        start = str(platformdirs.user_documents_path() / TEMPLATE_NAME)
+        name, _ = QFileDialog.getSaveFileName(None, "Save the client template", start, "Excel workbook (*.xlsx)")
+        if not name:
+            return
+        try:
+            path = make_template(Path(name))
+        except OSError as exc:
+            QMessageBox.warning(None, "Video QC Bot", f"Couldn't save the template: {exc}")
+            return
+        open_path(path.parent)
 
     # --- other actions ---------------------------------------------------------------------
 

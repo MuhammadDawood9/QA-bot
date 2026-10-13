@@ -300,8 +300,10 @@ def test_menu_toggles_and_client_choice_are_saved(companion, settings):
     color.toggle()                                                   # off
     assert "color" in settings.get("disabled_checks")
     clients = next(a.menu() for a in menu.actions() if a.text() == "Client")
-    next(a for a in clients.actions() if a.text() == "E8C").trigger()
+    next(a for a in clients.actions() if a.text().split()[:1] == ["E8C"]).trigger()     # "E8C  (display name)"
     assert Settings(settings.path).get("last_client") == "E8C"
+    labels = [a.text() for a in clients.actions()]
+    assert {"Add new client...", "Edit client...", "Get client template"} <= set(labels)
 
 
 def test_second_drop_while_busy_is_queued(companion, fake):
