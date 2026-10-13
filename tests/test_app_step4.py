@@ -131,6 +131,25 @@ def test_packaged_app_reads_config_from_the_data_folder(tmp_path, monkeypatch):
     assert config_module.resolve_path(loaded, "ocr_cache_dir") == tmp_path / "data" / "cache" / "ocr"
 
 
+def test_packaged_app_gets_new_settings_but_keeps_the_users(tmp_path, monkeypatch):
+    bundle, data = tmp_path / "bundle", tmp_path / "data"
+    bundle.mkdir()
+    data.mkdir()
+    (bundle / "config.yaml").write_text(                                   # what a new version ships
+        "paths: {reports: r}\ncolor: {sample_fps: 4, face_every_n_frames: 4, measure_every_n_frames: 1}\n"
+        "ocr: {det_max_side: 960}\n", encoding="utf-8")
+    (data / "config.yaml").write_text(                                     # the user's copy from an older one
+        "paths: {reports: my reports}\ncolor: {sample_fps: 4, face_every_n_frames: 2}\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(bundle), raising=False)
+    monkeypatch.setattr(config_module, "user_data_root", lambda: data)
+    loaded = config_module.load_config()
+    assert loaded["paths"]["reports"] == "my reports"                      # theirs wins
+    assert loaded["color"]["face_every_n_frames"] == 2
+    assert loaded["color"]["measure_every_n_frames"] == 1                  # new settings arrive
+    assert loaded["ocr"]["det_max_side"] == 960
+
+
 def test_source_runs_keep_using_the_project_folder():
     assert not config_module.is_frozen()
     assert config_module.default_config_path() == config_module.DEFAULT_CONFIG

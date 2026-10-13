@@ -19,6 +19,7 @@ transcripts/
 
 # Output
 reports/
+mac_check_*/
 
 # Raw and generated data (QC exports, sample videos, examples.csv, exceptions.yaml)
 data/

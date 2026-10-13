@@ -187,7 +187,7 @@ def test_every_shot_is_measured_and_searched_for_faces_from_its_first_frame():
 
 
 def test_sampling_settings_are_in_the_config():
-    assert SETTINGS["sample_fps"] == 4 and SETTINGS["measure_every_n_frames"] == 2
+    assert SETTINGS["sample_fps"] == 4 and SETTINGS["measure_every_n_frames"] == 1
     assert SETTINGS["face_every_n_frames"] == 4
 
 

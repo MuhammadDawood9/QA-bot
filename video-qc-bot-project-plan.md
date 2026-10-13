@@ -837,6 +837,26 @@ Windows 10/11 and macOS (Intel, also Apple Silicon); OS-specific code only in `s
   add to the glossary" column; tray menu Edit glossary. The glossary is the better fix for a correct name: it also
   catches misspellings of it.
 
+### Machine check for the Mac; two corrections (2026-10-13)
+- **`scripts/mac_check.py` (step 7):** the real Mac run can't be done from the Windows laptop, so one script
+  does it there: environment (macOS, chip, Qt platform, screens and scaling, tray, ffmpeg, the heavy libraries),
+  sample videos made with `say` if missing, the whole test suite with `--run-slow`, one timed `--check`, the
+  mascot in each state on the real screen (screenshots, CPU idle/working), then the app plus 12 yes/no questions
+  (glow without a square, sharpness, hover blink, click-through, drag, menu bar, no Dock icon, right-click,
+  drop, done, Spaces, quit). Output: `mac_check_<date-time>/report.md` + logs and screenshots (gitignored).
+  Rehearsed on Windows (`--quick --no-questions`): all steps ran.
+- **Color measured on every frame again:** the rehearsal found 9 issues in burned_box.mp4 where the packaged app
+  found 10. Shot 2's black levels were [0, 50, 50, 52, 52, 52, 0] (an edge frame of each neighbouring shot);
+  every 2nd frame gives [0, 50, 52, 0], median 25 instead of 50, and its flat-contrast flag was lost. The test
+  videos of the earlier comparison have clean cuts, so it didn't show there. `measure_every_n_frames: 1` (the
+  option stays); faces stay at every 4th frame (skin hue within 1.3 deg on the test video). The color stage is
+  about 3x faster than before today's work instead of 4.8x.
+- **Packaged app's config gets new settings:** the user's config.yaml copy is never replaced (edits survive
+  updates), so an installed app never saw a new setting; this one still measured color the old way. Now
+  `load_config` lays the user's copy over the config.yaml the app ships with: theirs wins, new keys arrive. A
+  setting already in an old copy keeps its old value (an old default can't be told from an edit), e.g. the
+  installed copy's `face_every_n_frames: 2`.
+
 ### Open questions
 - Set `ocr.region` for each client whose captions sit in a fixed place: it's what makes the OCR fast.
 - Fill `data/ground_truth.csv` and put the matching videos (`data/ground_truth_videos.csv` lists them, most useful

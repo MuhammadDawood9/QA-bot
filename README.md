@@ -139,6 +139,22 @@ Example output:
 Severity tells you how sure the bot is that it's a real mistake: `high` (almost always right),
 `medium` (usually right), `low` (worth a glance; often a name to add to the glossary).
 
+### Checking it on the Mac (or any new machine)
+
+One command checks everything the automatic tests can't, and asks you a few yes/no questions at the end:
+
+```
+python scripts/mac_check.py              # about 15-20 minutes
+python scripts/mac_check.py --quick      # without the slow tests
+```
+
+It reports the machine (macOS version, Intel or Apple chip, Retina scaling, menu bar), makes the sample videos
+with the Mac's own voice if needed, runs all the tests including the slow ones, checks one video through the app
+and times it, puts the mascot on screen in each state (screenshots, CPU use), then starts the app and asks you
+about dragging, clicking through the glow, the menu bar, the Dock and dropping a video. Everything ends up in
+`mac_check_<date-time>/`: send that folder zipped, or just its `report.md`. macOS asks once whether Terminal may
+record the screen (for the screenshots): allow it.
+
 ### Checking several videos
 
 Drop several videos on the mascot, or a folder (the videos directly inside it, by name), or pick several with
@@ -530,8 +546,8 @@ from the graphics ("Elizabeth Meyer" under "ELIZABETH MAIER").
 Runs whenever a video is given (`--no-color` skips it). The video is cut into shots where the
 colors jump, and every shot is measured 4 times a second, leaving out the client's caption region
 (white caption text would otherwise count as blown highlights). Black screens are skipped. Cuts are
-looked for on every sampled frame; brightness and color are measured on every 2nd frame of a shot and faces
-on every 4th, both counted from the shot's first frame (`measure_every_n_frames`, `face_every_n_frames`).
+looked for on every sampled frame and brightness and color measured on each; faces are looked for on every
+4th frame of a shot, counted from its first (`face_every_n_frames`).
 
 | Issue type | What it means | From the QC notes |
 |---|---|---|
@@ -544,7 +560,7 @@ on every 4th, both counted from the shot's first frame (`measure_every_n_frames`
 | `skin_tone` | Skin on detected faces too pink, too yellow/green, too orange, or grey | "skin color yellow" (43) |
 | `shot_mismatch` | Skin tone jumps from the previous shot with a face, or a shot's tint/saturation is far from the rest of the video | "alien to the rest of footage", "color change when the camera changes" |
 
-Pixels are converted to RGB using the video's own color tags; untagged HD video is read as BT.709 and limited range, as players do. **HDR (PQ, HLG) and BT.2020 videos are not measured**, because every threshold assumes SDR Rec.709; the report says so. Measuring takes about 15 s per minute of 1080p video, most of it decoding the video.
+Pixels are converted to RGB using the video's own color tags; untagged HD video is read as BT.709 and limited range, as players do. **HDR (PQ, HLG) and BT.2020 videos are not measured**, because every threshold assumes SDR Rec.709; the report says so. Measuring takes about 20 s per minute of 1080p video, most of it decoding the video.
 
 Faces are found with OpenCV's YuNet model (232 KB, downloaded once into `models/`, checksum checked).
 All thresholds are in the `color:` block of `config.yaml`. These are measurements, not taste: a

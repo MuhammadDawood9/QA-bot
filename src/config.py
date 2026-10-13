@@ -85,9 +85,17 @@ def load_yaml(path: Path) -> dict:
 
 
 def load_config(path: Path | None = None) -> dict:
-    """Load config.yaml. Relative paths inside it are resolved against the file's folder."""
+    """Load config.yaml. Relative paths inside it are resolved against the file's folder.
+
+    In a packaged app the user's copy (in the OS data folder) is laid over the config.yaml the app
+    ships with: their values win, and settings added since their copy was made come from the new
+    one. Without this an installed app would never get a new setting (the copy is never replaced,
+    so edits survive updates)."""
     path = Path(path) if path else default_config_path()
     config = load_yaml(path)
+    shipped = Path(getattr(sys, "_MEIPASS", "")) / "config.yaml" if is_frozen() else None
+    if shipped is not None and shipped.is_file() and shipped.resolve() != path.resolve():
+        config = deep_merge(load_yaml(shipped), config)
     config["_root"] = path.resolve().parent
     return config
 

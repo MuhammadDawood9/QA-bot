@@ -217,7 +217,9 @@ color:
   sample_fps: 4                 # frames looked at per second (cuts are found on every one)
   cut_threshold: 0.35           # color-histogram change (0-1) that counts as a cut between shots
   min_shot_sec: 0.5
-  measure_every_n_frames: 2     # brightness and color measured on every 2nd frame of a shot (from its first)
+  measure_every_n_frames: 1     # brightness and color on every frame of a shot. 2 is faster but can lose
+                                # a flag: frames at a shot's edges often belong to the next shot, and with
+                                # fewer frames they decide the shot's middle value (burned_box shot 2)
   skin_tones: true              # find faces (YuNet model, downloaded once, 232 KB) and measure skin
   face_every_n_frames: 4        # faces looked for on every 4th frame of a shot (from its first)
   skip: []                      # issue types not to report, e.g. ["saturation", "color_cast"]
