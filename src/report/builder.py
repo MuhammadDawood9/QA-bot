@@ -60,6 +60,8 @@ class ReportInfo:
     rules_version: str | None = None
     checks: list[str] = field(default_factory=list)     # one line per check: what ran, what was skipped
     generated: dt.datetime = field(default_factory=dt.datetime.now)
+    app_version: str | None = None
+    client_rules_version: str | None = None             # hash of the client file (+ its color settings)
 
 
 def captions_source(info: "ReportInfo") -> str:
@@ -210,6 +212,10 @@ def _header(info, captions, issues, flagged) -> list[str]:
     lines.append(f"- **Client:** {md(info.client or 'default rules')}")
     lines.append(f"- **Generated:** {info.generated:%Y-%m-%d %H:%M}")
     lines.append(f"- **Rules version:** {md(info.rules_version or 'unknown')}")
+    if info.client_rules_version:
+        lines.append(f"- **Client rules version:** {md(info.client_rules_version)}")
+    if info.app_version:
+        lines.append(f"- **App version:** Video QC Bot {md(info.app_version)}")
     if info.checks:
         lines.append("- **Checks:**")
         lines += [f"  - {md(c)}" for c in info.checks]

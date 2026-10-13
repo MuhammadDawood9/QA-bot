@@ -80,3 +80,93 @@ def extend_path() -> list[str]:
     """Nothing to add: winget puts ffmpeg on the user's PATH, which apps started from the Start
     Menu or at login see."""
     return []
+
+
+# --- the machine: memory, priority, processes, folders (used by the engine too; nothing here imports Qt) ---
+
+def _kernel32():
+    import ctypes
+
+    return ctypes.WinDLL("kernel32", use_last_error=True)
+
+
+def _memory_status():
+    import ctypes
+
+    class MEMORYSTATUSEX(ctypes.Structure):
+        _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+    status = MEMORYSTATUSEX()
+    status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+    if not _kernel32().GlobalMemoryStatusEx(ctypes.byref(status)):
+        return None
+    return status
+
+
+def total_ram_bytes() -> int | None:
+    try:
+        status = _memory_status()
+        return int(status.ullTotalPhys) if status else None
+    except OSError:
+        return None
+
+
+def available_ram_bytes() -> int | None:
+    try:
+        status = _memory_status()
+        return int(status.ullAvailPhys) if status else None
+    except OSError:
+        return None
+
+
+BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
+
+
+def lower_priority() -> bool:
+    """Run this process (and the ffmpeg it starts, which inherits it) below normal priority, so
+    editing and playback on the same PC stay smooth. No admin rights needed."""
+    try:
+        k = _kernel32()
+        return bool(k.SetPriorityClass(k.GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS))
+    except (OSError, AttributeError):
+        return False
+
+
+def pid_alive(pid: int) -> bool:
+    """Whether a process with this id is still running (any user's)."""
+    import ctypes
+
+    process_query_limited_information, still_active, access_denied = 0x1000, 259, 5
+    try:
+        k = _kernel32()
+        handle = k.OpenProcess(process_query_limited_information, False, int(pid))
+        if not handle:
+            return ctypes.get_last_error() == access_denied     # exists, but it's someone else's
+        try:
+            code = ctypes.c_ulong()
+            if not k.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return True
+            return code.value == still_active
+        finally:
+            k.CloseHandle(handle)
+    except (OSError, AttributeError):
+        return True                      # can't tell: assume it runs (never break a live lock)
+
+
+def machine_dir() -> Path:
+    """A folder every user of this PC can write: %PROGRAMDATA%\\VideoQCBot (for the
+    one-check-at-a-time lock)."""
+    import os
+
+    return Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "VideoQCBot"
+
+
+def bootstrap_dirs(executable: Path, frozen: bool) -> list[Path]:
+    """Where IT can put videoqcbot-bootstrap.yaml, first match wins: next to VideoQCBot.exe, then
+    %PROGRAMDATA%\\VideoQCBot (machine-wide, e.g. pushed by Intune or a GPO)."""
+    dirs = [Path(executable).parent] if frozen else []
+    return dirs + [machine_dir()]

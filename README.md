@@ -65,11 +65,13 @@ Without it, the punctuation check is skipped with a warning and every other chec
 
 ### ffmpeg (needed to check a video's audio)
 
+`requirements.txt` installs `imageio-ffmpeg`, which brings its own ffmpeg, so nothing else is needed.
+An ffmpeg on your PATH is used first when running from source (the packaged app always uses its own):
+
 - Windows: `winget install ffmpeg`
 - macOS: `brew install ffmpeg`
 
-Open a new terminal afterwards so `ffmpeg` is on your PATH. If it still isn't found, put the full
-path to the ffmpeg program in `machine.ffmpeg_path` in `config.yaml`.
+Or put the full path to an ffmpeg program in `machine.ffmpeg_path` in `config.yaml`.
 
 The first time a video is checked, the Whisper speech model is downloaded into `models/`
 (`base` about 145 MB, `small` about 465 MB). After that it works offline.
@@ -191,6 +193,21 @@ ignore:
 Every field given must match (`client`, `type`, `text` in the caption, `video`, `at` within 2 s); a field left
 out matches anything. Shorten `text` to the word that's fine to cover every caption with it. The report's checks
 list says how many flags were hidden, so nothing disappears silently.
+
+## On the QC floor (many PCs, one shared folder)
+
+Every PC can share one data folder (a network drive or a synced SharePoint/OneDrive folder) for the
+clients, glossary, rules, ignore list and color settings. Each PC keeps a cached copy and keeps
+working from it when the folder can't be reached ("offline, using cached rules" in the menu). Saves
+to the shared folder take a lock, back up the old file and go into `changelog.csv`. Only editors
+(a login-name list or a PIN in `shared_settings.yaml`) can change clients; everyone can run checks.
+Checks run at below-normal priority on half the cores, one at a time per PC. Setting it up (bootstrap
+file, permissions, models, silent install, antivirus, updates): [`docs/IT_DEPLOYMENT.md`](docs/IT_DEPLOYMENT.md).
+
+Menu items for this: *Check for update* (compares with `latest.json` in the shared folder, never
+installs), *Copy diagnostics* (version, OS, setup, last log lines, for support), *Editor mode...*
+(enter the PIN), and in *Settings*: the shared folder, the speech model for this PC, copying reports
+to the shared reports folder, *Set editor PIN...*.
 
 ## Desktop app
 

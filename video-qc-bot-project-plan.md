@@ -951,6 +951,67 @@ Not built on purpose: ClickUp sync, creative-direction checks, PDF reports.
   pt it; minimum words 1-10; caption area inside the frame; color types and check names from fixed lists;
   exceptions need a type, text, video or time.
 
+- **Three places** (Phase 3): (a) the app is read-only and its own config.yaml, color.yaml, rules... are the
+  defaults; (b) the shared folder holds every shared file plus `shared_settings.yaml`, `latest.json`, backups,
+  changelog, models, optional reports; (c) per-user local data: settings, reports, caches, logs, models it had to
+  download, `local.yaml` (this PC's machine settings) and `shared_cache/` (the copy every check reads).
+- **Config on the floor** = the app's config.yaml, then the shared config.yaml (only what the floor changes), then
+  this PC's local.yaml. Cache and model paths (`LOCAL_PATH_KEYS`) resolve under the local folder; a shared file
+  missing from the shared folder falls back to the app's own copy (`DATA_FILE_KEYS`). Alone on a PC (no shared
+  folder) everything behaves as before, so existing setups and tests are unchanged.
+- **Where the shared folder comes from**: a bootstrap file with `force: true` > the user's choice in the first-run
+  setup screen (`floor.yaml` in the user config folder) > a bootstrap file > nothing (alone). Bootstrap locations
+  next to the app or machine-wide (`%PROGRAMDATA%\VideoQCBot`, `/Library/Application Support/VideoQCBot`), from
+  `src/platform`. Paths expand `~` and environment variables (`%OneDrive%`). Choosing an empty folder offers to seed
+  it with the app's starting files.
+- **Reads always come from the cached copy**, refreshed (only changed files, by size and mtime; deleted clients
+  removed) before every check (in the worker thread, so the window never waits), every 60 s in the background, and
+  when a menu opens if the last refresh is over 30 s old. Reaching the folder is tried in a thread with a 4 s
+  limit, because a disconnected SMB drive can block for a minute. Offline: the menu shows "Offline, using cached
+  rules from <time>", the tray tooltip says so, a notification appears once, and saving is refused with a
+  message (checks still run). A missing `clients/` folder on the share (a sync client mid-update) keeps the copy.
+- **Writes go to the shared folder itself** (not the copy) under one lock file (`.locks/data.lock`, O_EXCL,
+  holder's user and PC inside, taken over after 120 s as a crashed save, 20 s wait then "<user> on <PC> is saving
+  changes"), then atomic temp+rename (retried on Windows sharing errors), a backup of the old file and a
+  changelog row; then the copy is refreshed. Duplicate client codes are checked against the shared folder, so a
+  client added a minute ago on another PC is seen.
+- **The glossary and ignore list are edited inside the app** (a text editor dialog) instead of the OS's default
+  editor, so every save takes the lock, gets a backup and a changelog line, is checked as valid YAML, and is
+  refused if someone else saved the file since it was opened. Non-editors and offline PCs get a view-only window.
+- **Roles**: alone on a PC everyone is an editor. On the floor: login names in `shared_settings.yaml editors`
+  (case-insensitive), or the editor PIN for the session (PBKDF2-SHA256, 200 000 rounds, random salt, stored as a
+  hash); when neither is set up yet everyone is an editor so the first one can set it up. Documented everywhere as
+  a convenience, not security (folder permissions are the real control).
+- **Gentle on PCs**: below-normal priority for the whole app process from start (Windows BELOW_NORMAL_PRIORITY_CLASS;
+  macOS nice 10, which a normal user can't undo, so it isn't toggled per check); ffmpeg inherits it. Threads
+  `auto` = half the cores for Whisper and the OCR (`machine.cpu_threads`, `ocr.cpu_threads`, were 4 and all
+  cores). One check per PC across users and app copies: a lock file in a folder every user can write
+  (`%PROGRAMDATA%\VideoQCBot`, `/Users/Shared/VideoQCBot`) with the owner's pid; a dead owner's lock is taken
+  over; a second check shows "Waiting: another check is running on this PC (user)" and can be cancelled. Low disk
+  (< 2 GB on the report or cache drive) and low free memory (< 1.5 GB) warn before a check, without stopping it.
+- **Whisper model `auto`**: base under 4 cores or under 8 GB of memory, else small (medium is too slow on CPU for a
+  floor). This changes this laptop's model from base to small, so its cached transcripts are made again once
+  (the cache key includes the model). Manual override per PC: Settings > Speech model (written to local.yaml), or
+  `machine.whisper_model_size` in config.
+- **Models**: a ready model folder `<models>/whisper/<size>/model.bin...` (what `scripts/make_offline_bundle.py`
+  makes with huggingface_hub) is loaded as a plain path, so a read-only share works and nothing is downloaded; the
+  shared models folder is tried first, then the user's own. The face model likewise. The OCR models were already
+  inside the rapidocr package; nothing to share.
+- **ffmpeg bundled** with `imageio-ffmpeg` 0.6.0 (static ffmpeg 7.1 wheels for Windows, macOS Intel and Apple
+  Silicon; no dependencies). The packaged app uses it first; from source an ffmpeg on PATH still comes first (so
+  this laptop's behaviour doesn't change), the bundled one is the fallback. There's no ffprobe in it; nothing uses one.
+- **Versions**: `src/version.py` (0.5.0) is the single source; the PyInstaller spec reads it. Reports show the app
+  version and a client rules version (sha256 of the client file + its color.yaml block, 12 hex). Check for update
+  reads `latest.json` from the cached copy, says where the installer is and can open its folder; a newer version is
+  announced once by a notification at start. Never installs.
+- **Shared reports**: off unless `shared_settings.yaml reports.copy_to_shared: true` or the user ticks it in
+  Settings; then the Word report (and an audio report's clips folder) is copied to
+  `<shared reports>/<client>/<YYYY-MM-DD>_<user>_<video>.docx`, never overwriting. The report is always saved
+  locally first; a failed copy is a warning, not a failed check.
+- **Diagnostics**: version, OS, CPU/memory, floor state, editor or not, ffmpeg, models found, settings, last 150 log
+  lines; to the clipboard and `diagnostics.txt` in the log folder. Whether an API key is set, never its value.
+- **The CLI** (`python -m src.main`) refreshes the cached copy once at start when a shared folder is set.
+
 ### Phase 1: Simplify and expose settings — done (2026-10-13)
 - Punctuation off and hidden as above; tests updated: the default CLI run never mentions the API; with the check
   switched on and no key it is still skipped with the old warning.
@@ -974,3 +1035,24 @@ Not built on purpose: ClickUp sync, creative-direction checks, PDF reports.
 - **Untested on real material:** no real client style-guide PDF was available; the PDF heuristics were tested on
   generated text PDFs only. The caption area picker was tested headless (drag maths, frame loading); the dragging
   itself needs the manual steps.
+
+### Phase 3: Many PCs on the floor — done (2026-10-13)
+- `src/shared.py` (floor setup, bootstrap, cached copy and sync, shared lock, shared writes, shared settings, roles,
+  PIN, shared reports), `src/machine.py` (auto threads and Whisper model, resource warnings, one check per PC),
+  `src/version.py`, `src/diagnostics.py`; machine helpers per OS in `src/platform/` (memory, priority, pid alive,
+  machine folder, bootstrap folders); config loader made floor-aware (`src/config.py`).
+- App: first-run setup screen, version line, offline line and tray tooltip, editor gating, Editor mode (PIN),
+  in-app glossary / ignore list editor, Check for update, Copy diagnostics, Settings (shared folder, speech model,
+  shared reports, Set editor PIN). Worker: refresh, warnings, one-check-per-PC wait, shared report copy.
+- `scripts/make_offline_bundle.py`, `docs/IT_DEPLOYMENT.md`; packaging spec bundles imageio-ffmpeg and reads the
+  version from src/version.py.
+- New dependency: **imageio-ffmpeg 0.6.0** (bundled ffmpeg; no PyTorch; one wheel per OS/chip).
+- Tests: `tests/test_floor.py` (setup precedence, seeding, config from the cached copy, changes from another PC
+  arriving, offline, fallbacks, local.yaml, the lock and a stale lock, conflicting edits, client saves to the
+  share, PIN hashing, roles, machine defaults, resource warnings, the per-PC lock, shared models, bundled ffmpeg,
+  update check, shared report names, versions in reports, diagnostics without the key, the dialogs, the menu).
+- **Untested on real infrastructure:** a real SMB share and a synced OneDrive/SharePoint folder (the tests use a
+  local folder, and an unplugged drive is simulated by a missing path), two PCs saving at the same moment,
+  fast user switching on one PC (the per-PC lock was tested within one process with a live pid and a dead one),
+  low-priority behaviour under a real editing load, the macOS memory/priority helpers (written for macOS, run only
+  on Windows here), PyInstaller builds with the bundled ffmpeg on both OSes, and MDM/Intune deployment.

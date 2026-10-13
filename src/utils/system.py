@@ -19,15 +19,35 @@ class MissingToolError(RuntimeError):
     pass
 
 
+def bundled_ffmpeg() -> str | None:
+    """The ffmpeg that ships inside the app (the imageio-ffmpeg package: a static build for Windows,
+    macOS Intel and Apple Silicon), or None."""
+    try:
+        import imageio_ffmpeg
+
+        path = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:                       # not installed, or its binary is missing from the build
+        return None
+    return path if path and Path(path).is_file() else None
+
+
 def find_ffmpeg(configured: str | None = None) -> str:
-    """The ffmpeg program: machine.ffmpeg_path from config if set, otherwise the one on PATH."""
+    """The ffmpeg program: machine.ffmpeg_path from config if set; then, in the packaged app, the
+    bundled one (so every floor PC uses the same build, no install needed); then the one on PATH;
+    then the bundled one."""
+    import sys
+
     if configured:
         path = Path(configured)
         if path.is_file():
             return str(path)
         raise MissingToolError(f"machine.ffmpeg_path is set to {configured}, but that file doesn't exist.\n"
                                + FFMPEG_INSTALL_HELP)
-    found = shutil.which("ffmpeg")
+    if getattr(sys, "frozen", False):
+        found = bundled_ffmpeg()
+        if found:
+            return found
+    found = shutil.which("ffmpeg") or bundled_ffmpeg()
     if found is None:
         raise MissingToolError(FFMPEG_INSTALL_HELP)
     return found

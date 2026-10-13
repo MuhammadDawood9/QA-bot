@@ -27,7 +27,7 @@ from typing import Iterable
 import yaml
 
 from src.clients.model import BuiltClient, ClientError, clean_code, describe_changes
-from src.config import load_yaml, normalize_client_code, resolve_path
+from src.config import load_yaml, normalize_client_code
 from src.utils.safe_io import ChangeEntry, append_changelog, atomic_write_text, backup, current_user
 
 CLIENT_HEADER = """\
@@ -59,11 +59,13 @@ def write_color_clients(path: Path, clients: dict) -> None:
 
 
 class ClientStore:
-    def __init__(self, config: dict, lock=None):
+    def __init__(self, config: dict, lock=None, root: Path | None = None):
+        """root: where to read and write (the shared folder itself on the floor, so a duplicate
+        code saved a minute ago on another PC is seen); default the config's data folder."""
         self.config = config
         paths = config.get("paths") or {}
-        root = Path(config["_root"])
-        self.clients_dir = resolve_path(config, "clients_dir")
+        root = Path(root) if root is not None else Path(config["_root"])
+        self.clients_dir = root / paths.get("clients_dir", "clients")
         self.color_file = root / paths.get("color_file", "color.yaml")
         self.backups_dir = root / paths.get("backups_dir", "backups")
         self.changelog = root / paths.get("changelog_file", "changelog.csv")

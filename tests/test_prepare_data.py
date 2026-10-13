@@ -81,7 +81,16 @@ def test_full_run_on_real_spreadsheet(tmp_path):
 
 def test_missing_ffmpeg_explains_install_on_both_systems(monkeypatch):
     monkeypatch.setattr(system.shutil, "which", lambda name: None)
+    monkeypatch.setattr(system, "bundled_ffmpeg", lambda: None)
     with pytest.raises(system.MissingToolError) as err:
         system.find_ffmpeg()
     assert "winget install ffmpeg" in str(err.value)
     assert "brew install ffmpeg" in str(err.value)
+
+
+def test_bundled_ffmpeg_when_none_on_path(monkeypatch):
+    monkeypatch.setattr(system.shutil, "which", lambda name: None)
+    bundled = system.bundled_ffmpeg()
+    if bundled is None:
+        pytest.skip("imageio-ffmpeg isn't installed")
+    assert system.find_ffmpeg() == bundled and Path(bundled).is_file()

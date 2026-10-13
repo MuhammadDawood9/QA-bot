@@ -24,6 +24,9 @@ reports/
 backups/
 changelog.csv
 clients/*/sources/
+.locks/
+local.yaml
+shared_cache/
 mac_check_*/
 
 # Raw and generated data (QC exports, sample videos, examples.csv, exceptions.yaml)

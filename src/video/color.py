@@ -394,14 +394,19 @@ def color_issues(shots: Sequence[Shot], settings: dict) -> list[Issue]:
 
 # --- running it on a video, with a cache ---------------------------------------------------
 
-def face_detector(models_dir: Path | None, threshold: float = 0.8):
+def face_detector(models_dir, threshold: float = 0.8):
     """YuNet face detector (OpenCV), its model downloaded once into models/ (232 KB, checksum
-    checked). None if it can't be had: the skin checks are then skipped, nothing else."""
+    checked). models_dir may be several folders (the shared read-only models folder first): the
+    first that has the model is used, else it's downloaded into the last. None if it can't be
+    had: the skin checks are then skipped, nothing else."""
     import cv2
 
     if models_dir is None:
         return None
-    path = Path(models_dir) / YUNET_FILE
+    dirs = [Path(models_dir)] if isinstance(models_dir, (str, Path)) else [Path(d) for d in models_dir]
+    if not dirs:
+        return None
+    path = next((d / YUNET_FILE for d in dirs if (d / YUNET_FILE).is_file()), dirs[-1] / YUNET_FILE)
     try:
         if not path.is_file():
             log.info("downloading the face detection model (once, 232 KB)...")

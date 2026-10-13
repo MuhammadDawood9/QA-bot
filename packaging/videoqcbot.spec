@@ -15,9 +15,12 @@ from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, co
 
 ROOT = Path(SPECPATH).parent
 MAC = sys.platform == "darwin"
-VERSION = "0.4.0"
+import re as _re
 
-# Editable files, copied to the OS data folder on first run (src/config.py), and the images.
+VERSION = _re.search(r'__version__ = "([^"]+)"', (ROOT / "src" / "version.py").read_text(encoding="utf-8")).group(1)
+
+# The app's own copy of the shared files (defaults, and what a new shared folder is set up with), and the images.
+# A videoqcbot-bootstrap.yaml from IT is NOT built in: it goes next to the installed app (docs/IT_DEPLOYMENT.md).
 datas = [(str(ROOT / name), ".") for name in ("config.yaml", "rules.yaml", "glossary.txt", "extra_words.txt",
                                               "ignore.yaml", "color.yaml")]
 datas += [(str(ROOT / "clients"), "clients"), (str(ROOT / "assets"), "assets")]
@@ -25,14 +28,16 @@ if (ROOT / "data" / "examples.csv").is_file():          # real QC examples for t
     datas.append((str(ROOT / "data" / "examples.csv"), "data"))
 # Model and data files inside packages: OCR models, Whisper's voice-activity model, the spell
 # checker's word lists, Word's document template.
-for package in ("rapidocr_onnxruntime", "faster_whisper", "spellchecker", "docx"):
+# imageio_ffmpeg: the bundled ffmpeg program (floor PCs need no ffmpeg install).
+for package in ("rapidocr_onnxruntime", "faster_whisper", "spellchecker", "docx", "imageio_ffmpeg"):
     datas += collect_data_files(package)
 
 binaries = collect_dynamic_libs("ctranslate2") + collect_dynamic_libs("onnxruntime")
 
 # Modules the code imports inside functions, which PyInstaller's scan can miss.
 hiddenimports = collect_submodules("src") + ["faster_whisper", "rapidocr_onnxruntime", "spellchecker", "docx",
-                                             "anthropic", "openpyxl", "platformdirs", "rapidfuzz", "pypdf"]
+                                             "anthropic", "openpyxl", "platformdirs", "rapidfuzz", "pypdf",
+                                             "imageio_ffmpeg"]
 
 a = Analysis(
     [str(ROOT / "run_app.pyw")],

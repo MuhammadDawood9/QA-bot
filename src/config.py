@@ -84,20 +84,77 @@ def load_yaml(path: Path) -> dict:
     return data or {}
 
 
+LOCAL_NAME = "local.yaml"      # this PC's own settings (machine: block), laid over everything else
+# Paths that are per user and per PC (caches, downloaded models): under the local folder even when
+# the rules come from the shared folder.
+LOCAL_PATH_KEYS = ("llm_cache_file", "transcript_cache_dir", "ocr_cache_dir", "color_cache_dir", "audio_cache_dir",
+                   "models_dir")
+# Shared files that, when missing from the data folder, are read from the app's own defaults.
+DATA_FILE_KEYS = ("rules_file", "glossary_file", "extra_words_file", "examples_file", "color_file")
+
+
 def load_config(path: Path | None = None) -> dict:
     """Load config.yaml. Relative paths inside it are resolved against the file's folder.
 
-    In a packaged app the user's copy (in the OS data folder) is laid over the config.yaml the app
-    ships with: their values win, and settings added since their copy was made come from the new
-    one. Without this an installed app would never get a new setting (the copy is never replaced,
-    so edits survive updates)."""
-    path = Path(path) if path else default_config_path()
+    With no path: the floor setup decides (src/shared.py). With a shared folder, the app's own
+    config.yaml is laid under the shared one (from the cached copy), and caches and models stay
+    in the user's local folder. Alone, as before: config.yaml next to src/, or in a packaged app the
+    user's copy (in the OS data folder) laid over the config.yaml the app ships with, so settings
+    added since their copy was made still arrive. In both cases this PC's local.yaml comes last."""
+    floor = None
+    if path is None:
+        from src.shared import current_floor
+
+        floor = current_floor()
+        if floor.shared:
+            return _finish(_shared_config(floor), floor)
+        path = default_config_path()
+    path = Path(path)
     config = load_yaml(path)
     shipped = Path(getattr(sys, "_MEIPASS", "")) / "config.yaml" if is_frozen() else None
     if shipped is not None and shipped.is_file() and shipped.resolve() != path.resolve():
         config = deep_merge(load_yaml(shipped), config)
     config["_root"] = path.resolve().parent
+    if is_frozen():
+        config["_app_root"] = Path(getattr(sys, "_MEIPASS", PROJECT_ROOT))
+    return _finish(config, floor)
+
+
+def _shared_config(floor) -> dict:
+    from src.shared import app_dir
+
+    shipped = app_dir() / "config.yaml"
+    config = load_yaml(shipped) if shipped.is_file() else {}
+    on_floor = floor.data_root / "config.yaml"
+    if on_floor.is_file():
+        config = deep_merge(config, load_yaml(on_floor))
+    config["_root"] = floor.data_root
+    config["_local_root"] = floor.local_dir
+    config["_app_root"] = app_dir()
+    config["_shared"] = True
+    if floor.setup.shared_models is not None:
+        config["_shared_models"] = floor.setup.shared_models
+    return config
+
+
+def _finish(config: dict, floor) -> dict:
+    """What every load does last: this PC's local.yaml, the floor-wide settings, color.yaml, and
+    "auto" machine settings turned into numbers."""
+    from src.machine import apply_machine_defaults
+    from src.shared import shared_settings
+
+    if floor is not None:
+        # Alone on a PC the data folder is this user's own, so local.yaml sits there; on the floor
+        # it's in the local folder (_local_root, set by _shared_config).
+        local = Path(config.get("_local_root") or config["_root"]) / LOCAL_NAME
+        if local.is_file():
+            config = deep_merge(config, load_yaml(local))
+    shared = shared_settings(Path(config["_root"]))
+    config["_shared_settings"] = shared
+    if shared.get("client_import"):
+        config["client_import"] = deep_merge(config.get("client_import") or {}, shared["client_import"])
     apply_color_file(config)
+    apply_machine_defaults(config)
     return config
 
 
@@ -111,7 +168,7 @@ def apply_color_file(config: dict) -> None:
         return
     path = Path(config["_root"]) / name
     data = load_yaml(path) if path.is_file() else {}
-    shipped = Path(getattr(sys, "_MEIPASS", "")) / "color.yaml" if is_frozen() else None
+    shipped = Path(config["_app_root"]) / "color.yaml" if config.get("_app_root") else None
     if shipped is not None and shipped.is_file() and shipped.resolve() != path.resolve():
         data = deep_merge(load_yaml(shipped), data)
     config["color"] = deep_merge(config.get("color") or {}, data.get("defaults") or {})
@@ -120,8 +177,29 @@ def apply_color_file(config: dict) -> None:
 
 
 def resolve_path(config: dict, key: str) -> Path:
-    """Absolute path for an entry under config["paths"]."""
-    return Path(config["_root"]) / Path(config["paths"][key])
+    """Absolute path for an entry under config["paths"]: caches and models in the local folder,
+    everything else in the data folder (falling back to the app's own copy of a shared file that
+    the data folder doesn't have)."""
+    relative = Path(config["paths"][key])
+    if key in LOCAL_PATH_KEYS and config.get("_local_root"):
+        return Path(config["_local_root"]) / relative
+    path = Path(config["_root"]) / relative
+    if key in DATA_FILE_KEYS and config.get("_app_root") and not path.exists():
+        fallback = Path(config["_app_root"]) / relative
+        if fallback.exists():
+            return fallback
+    return path
+
+
+def model_dirs(config: dict) -> list[Path]:
+    """Where models are looked for: the shared read-only models folder first (when there is one),
+    then this user's own models folder (where a missing model is downloaded)."""
+    dirs = []
+    shared = config.get("_shared_models")
+    if shared:
+        dirs.append(Path(shared))
+    dirs.append(resolve_path(config, "models_dir"))
+    return dirs
 
 
 def load_client(config: dict, code: str | None) -> dict:
@@ -169,3 +247,29 @@ def ocr_settings(config: dict, client: dict) -> dict:
     """Settings for reading burned-in captions: config.yaml "ocr:" with the client's "ocr:" block applied.
     Unlike check overrides, a client's region or ignore lists sit directly under "ocr:" in its file."""
     return deep_merge(config.get("ocr", {}), (client or {}).get("ocr") or {})
+
+
+def save_local_settings(local_dir: Path, updates: dict) -> Path:
+    """Merge `updates` into this PC's local.yaml (e.g. {"machine": {"whisper_model_size": "small"}});
+    a value of None removes that setting. Returns the file."""
+    from src.utils.safe_io import atomic_write_text
+
+    path = Path(local_dir) / LOCAL_NAME
+    data = load_yaml(path) if path.is_file() else {}
+
+    def merge(target: dict, changes: dict) -> None:
+        for key, value in changes.items():
+            if isinstance(value, dict):
+                merge(target.setdefault(key, {}), value)
+                if not target[key]:
+                    target.pop(key)
+            elif value is None:
+                target.pop(key, None)
+            else:
+                target[key] = value
+
+    merge(data, updates)
+    atomic_write_text(path, "# This PC's own Video QC Bot settings (set from the app's Settings). Laid over\n"
+                            "# config.yaml, including a shared one.\n"
+                      + yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
+    return path

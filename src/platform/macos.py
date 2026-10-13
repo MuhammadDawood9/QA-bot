@@ -162,3 +162,74 @@ def extend_path() -> list[str]:
     if added:
         os.environ["PATH"] = os.pathsep.join(current + added)
     return added
+
+
+# --- the machine: memory, priority, processes, folders (used by the engine too; nothing here imports Qt) ---
+
+def total_ram_bytes() -> int | None:
+    import os
+
+    try:
+        return int(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE"))
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def available_ram_bytes() -> int | None:
+    """Free + inactive + speculative pages from vm_stat (what macOS can hand out without swapping)."""
+    import re
+    import subprocess
+
+    try:
+        out = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    size = re.search(r"page size of (\d+) bytes", out)
+    pages = 0
+    for label in ("Pages free", "Pages inactive", "Pages speculative"):
+        m = re.search(rf"{label}:\s+(\d+)", out)
+        pages += int(m.group(1)) if m else 0
+    return pages * int(size.group(1)) if size and pages else None
+
+
+def lower_priority() -> bool:
+    """Lower this process's priority (nice 10; ffmpeg inherits it), so editing and playback on the
+    same Mac stay smooth. macOS doesn't let a normal user raise it back, so it stays for the
+    app's lifetime; the app is idle between checks anyway."""
+    import os
+
+    try:
+        if os.getpriority(os.PRIO_PROCESS, 0) < 10:
+            os.setpriority(os.PRIO_PROCESS, 0, 10)
+        return True
+    except (OSError, AttributeError):
+        return False
+
+
+def pid_alive(pid: int) -> bool:
+    import os
+
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True                  # PermissionError: another user's process
+    return True
+
+
+def machine_dir() -> Path:
+    """A folder every user of this Mac can write (for the one-check-at-a-time lock)."""
+    return Path("/Users/Shared/VideoQCBot")
+
+
+def bootstrap_dirs(executable: Path, frozen: bool) -> list[Path]:
+    """Where IT can put videoqcbot-bootstrap.yaml, first match wins: next to "Video QC Bot.app",
+    inside the app (Contents/Resources), then /Library/Application Support/VideoQCBot
+    (machine-wide, e.g. pushed by an MDM)."""
+    dirs = []
+    if frozen:
+        exe = Path(executable)
+        app = next((p for p in exe.parents if p.suffix == ".app"), None)
+        dirs += [app.parent, app / "Contents" / "Resources"] if app is not None else [exe.parent]
+    return dirs + [Path("/Library/Application Support/VideoQCBot")]

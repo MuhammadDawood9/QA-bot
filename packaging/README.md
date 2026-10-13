@@ -4,11 +4,16 @@ PyInstaller turns the app into a program that runs without Python: a folder with
 Windows, `Video QC Bot.app` on macOS. **Build each one on its own system.** PyInstaller can't build a
 Mac app on Windows or a Windows app on a Mac.
 
-What's inside: the app, the checks, the OCR models, the mascot images, and your config, rules,
-client files and glossary as they are when you build. Not inside:
-- **ffmpeg:** install it on each machine. The app tells you how if it's missing.
-- **The Whisper speech model** (145 MB) and the **face model** (232 KB): downloaded on the first check
-  that needs them, then kept.
+What's inside: the app, the checks, the OCR models, **ffmpeg** (imageio-ffmpeg's static build, so floor
+PCs need no install), the mascot images, and your config, rules, client files and glossary as they are
+when you build (the defaults, and what a new shared folder is set up with). Not inside:
+- **The Whisper speech model** (145-465 MB) and the **face model** (232 KB): read from the shared
+  models folder when there is one (`scripts/make_offline_bundle.py` fills it), otherwise downloaded on
+  the first check that needs them, then kept.
+
+**On a QC floor with many PCs** (a shared data folder, a bootstrap file, permissions, silent installs,
+antivirus, updates): see [`docs/IT_DEPLOYMENT.md`](../docs/IT_DEPLOYMENT.md). The table below is for
+a PC working alone.
 
 Where a built app keeps things (never inside itself, so updates don't wipe them):
 

@@ -29,3 +29,15 @@ def no_slow_video_passes(monkeypatch):
     monkeypatch.setattr("src.engine.read_screen_text", lambda *a, **kw: [])
     monkeypatch.setattr("src.engine.read_color", lambda *a, **kw: [])
     monkeypatch.setattr("src.engine.read_video_once", lambda *a, **kw: [])
+
+
+@pytest.fixture(autouse=True)
+def standalone_floor(monkeypatch, tmp_path_factory):
+    """Every test runs as "alone on this PC" with the project's own files, whatever this machine's
+    floor setup is, and the one-check-per-PC lock lives in a temporary folder."""
+    from src import shared
+
+    shared.set_floor(shared.Floor(shared.FloorSetup()))
+    monkeypatch.setenv("VIDEOQCBOT_MACHINE_DIR", str(tmp_path_factory.mktemp("machine")))
+    yield
+    shared.set_floor(None)

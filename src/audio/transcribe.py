@@ -44,7 +44,7 @@ def whisper_settings(machine: dict, settings: dict) -> dict:
     """Everything that changes the transcript, in one place (it is also part of the cache key)."""
     return {
         "model_size": machine.get("whisper_model_size", "base"),
-        "cpu_threads": int(machine.get("cpu_threads", 4)),
+        "cpu_threads": int(machine.get("cpu_threads", 4)) if str(machine.get("cpu_threads", 4)).isdigit() else 4,
         "device": settings.get("device", "cpu"),
         "compute_type": settings.get("compute_type", "int8"),
         "language": settings.get("language", "en"),
@@ -77,11 +77,40 @@ def download_label(model_size: str) -> str:
     return f"Downloading the speech model (one time, {size})" if mb else "Downloading the speech model (one time)"
 
 
-def _load_model(ws: dict, models_dir: Path | None, progress: Stage | None = None):
+def ready_model_dir(model_size: str, dirs: Sequence[Path]) -> Path | None:
+    """A Whisper model already unpacked as a plain folder (model.bin, config.json, tokenizer...),
+    as scripts/make_offline_bundle.py lays it out in the shared models folder: <dir>/whisper/<size>/."""
+    for folder in dirs:
+        candidate = Path(folder) / "whisper" / model_size
+        try:
+            if (candidate / "model.bin").is_file():
+                return candidate
+        except OSError:                          # a shared drive that's gone
+            continue
+    return None
+
+
+def _model_dirs(models_dir) -> list[Path]:
+    if models_dir is None:
+        return []
+    if isinstance(models_dir, (str, Path)):
+        return [Path(models_dir)]
+    return [Path(d) for d in models_dir]
+
+
+def _load_model(ws: dict, models_dir: Path | Sequence[Path] | None, progress: Stage | None = None):
+    """models_dir: one folder, or several (the shared read-only models folder first, then the
+    user's own, where a missing model is downloaded)."""
     from faster_whisper import WhisperModel   # heavy import, only when actually transcribing
 
+    dirs = _model_dirs(models_dir)
+    ready = ready_model_dir(ws["model_size"], dirs)
+    if ready is not None:                     # no Hugging Face cache, no network, read-only is fine
+        log.info("Whisper '%s' from %s", ws["model_size"], ready)
+        return WhisperModel(str(ready), device=ws["device"], compute_type=ws["compute_type"],
+                            cpu_threads=ws["cpu_threads"])
     kwargs = dict(device=ws["device"], compute_type=ws["compute_type"], cpu_threads=ws["cpu_threads"],
-                  download_root=str(models_dir) if models_dir else None)
+                  download_root=str(dirs[-1]) if dirs else None)
     try:
         return WhisperModel(ws["model_size"], local_files_only=True, **kwargs)   # no network once downloaded
     except Exception:
@@ -95,7 +124,8 @@ def _load_model(ws: dict, models_dir: Path | None, progress: Stage | None = None
         return model
 
 
-def faster_whisper_transcriber(models_dir: Path | None = None, progress: Stage | None = None) -> Transcriber:
+def faster_whisper_transcriber(models_dir: Path | Sequence[Path] | None = None,
+                               progress: Stage | None = None) -> Transcriber:
     progress = progress or silent()
 
     def transcribe(wav: Path, ws: dict, prompt: str) -> list[SpokenWord]:
@@ -136,7 +166,7 @@ def _load(path: Path) -> list[SpokenWord] | None:
 
 
 def get_transcript(video: Path, machine: dict, settings: dict, glossary_terms: Sequence[str],
-                   cache_dir: Path, models_dir: Path | None = None,
+                   cache_dir: Path, models_dir: Path | Sequence[Path] | None = None,
                    transcriber: Transcriber | None = None, progress: Stage | None = None) -> list[SpokenWord]:
     """The words spoken in the video, from the cache if this exact video was done before."""
     video = Path(video)

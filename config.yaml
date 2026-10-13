@@ -2,10 +2,13 @@
 # Every threshold lives here. Per-client overrides go in clients/<CLIENT>.yaml
 # under "overrides:", using the same structure as the "checks:" block below.
 
-# --- Machine-specific settings: edit these when moving between machines ---
+# --- Machine-specific settings ---
+# On the QC floor each PC can override these in its own local.yaml (Settings > Speech model), so one
+# shared config.yaml suits every PC.
 machine:
-  whisper_model_size: base     # "base" while testing, "small" for real use
-  cpu_threads: 4               # faster-whisper threads; set to the MacBook's performance-core count
+  whisper_model_size: auto     # auto = picked from the CPU and memory (base under 4 cores or 8 GB, else small);
+                               # or tiny / base / small / medium
+  cpu_threads: auto            # auto = half the cores, so editing on the same PC stays smooth; or a number
   ffmpeg_path: null            # null = find "ffmpeg" on PATH; or the full path to the ffmpeg program
 
 paths:
@@ -48,7 +51,7 @@ ocr:
   max_caption_sec: 12.0        # text on screen longer than this is a logo or title, not a caption
   screen_text_every_sec: 2.0   # read the whole frame this often for logos and name titles (0 = off)
   det_max_side: 960            # frames are shrunk to this many pixels on the long side for text finding
-  cpu_threads: -1              # -1 = all cores
+  cpu_threads: auto            # auto = half the cores (gentle on shared PCs); -1 = all cores
   # Spelling, capitalization, spacing and punctuation flags on a caption the OCR read less surely
   # than this are marked low severity with a note to check the screenshot: it may be the OCR's mistake.
   low_confidence: 0.75

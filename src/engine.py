@@ -26,8 +26,8 @@ from src import ignore
 from src.audio.transcribe import get_transcript
 from src.checks import CHECKS
 from src.checks.context import CheckContext
-from src.config import (check_settings, color_settings, load_client, load_config, load_yaml, normalize_client_code,
-                        ocr_settings, resolve_path)
+from src.config import (check_settings, color_settings, load_client, load_config, load_yaml, model_dirs,
+                        normalize_client_code, ocr_settings, resolve_path)
 from src.inputs.srt_loader import SrtError, load_srt
 from src.inputs.video_ocr import FULL_FRAME, OcrError, parse_region, read_burned_in_captions, read_screen_text
 from src.inputs.video_pass import read_video_once
@@ -152,7 +152,7 @@ def run_qc(video_path: str | Path | None, client: str | None = None,
         if video is not None and context.settings_for("transcript").get("enabled", False):
             context.transcript = get_transcript(
                 video, config.get("machine", {}), context.settings_for("transcript"), context.glossary.all_terms(),
-                resolve_path(config, "transcript_cache_dir"), resolve_path(config, "models_dir"), progress=stage)
+                resolve_path(config, "transcript_cache_dir"), model_dirs(config), progress=stage)
             context.stats["transcript"] = {"model": config.get("machine", {}).get("whisper_model_size", "base")}
         stage(1.0)
 
@@ -235,7 +235,7 @@ def _read_video_once(video: Path, srt: Path | None, config: dict, client: dict, 
                         known_captions=load_srt(srt) if srt is not None else None, color=color,
                         caption_region=None if region == FULL_FRAME else region,
                         color_cache=resolve_path(config, "color_cache_dir"),
-                        models_dir=resolve_path(config, "models_dir"), progress=stage)
+                        models_dir=model_dirs(config), progress=stage)
     except (OSError, OcrError, SrtError, ValueError) as exc:
         log.warning("couldn't read %s in one pass (%s); reading it pass by pass", video.name, exc)
 
@@ -256,7 +256,7 @@ def _color(video: Path | None, config: dict, client: dict, context: CheckContext
     try:
         region = parse_region(ocr_settings(config, client).get("region", "full"))
         shots = read_color(video, settings, None if region == FULL_FRAME else region,
-                           resolve_path(config, "color_cache_dir"), resolve_path(config, "models_dir"), stage)
+                           resolve_path(config, "color_cache_dir"), model_dirs(config), stage)
     except (OSError, OcrError) as exc:
         warnings.warn(f"color not checked: {exc}", stacklevel=2)
         return []
@@ -414,9 +414,27 @@ def write_report(result: QCResult, formats: Sequence[str] | None = None,
             warnings.warn(f"no screenshots in the report: {exc}", stacklevel=2)
     rules_path = resolve_path(config, "rules_file")
     rules_version = str(load_yaml(rules_path).get("version", "")) if rules_path.is_file() else None
+    from src.version import __version__
+
     info = ReportInfo(srt=result.srt, video=result.video, client=result.client.get("client"),
-                      rules_version=rules_version, checks=result.checks)
+                      rules_version=rules_version, checks=result.checks, app_version=__version__,
+                      client_rules_version=client_rules_version(config, result.client.get("client")))
     return build_report(result.captions, list(result), info, settings, ffmpeg)
+
+
+def client_rules_version(config: dict, code: str | None) -> str | None:
+    """A short hash of the client file and its color settings: two reports with the same value
+    were made with the same client rules. None for the default rules."""
+    import hashlib
+    import json
+
+    code = normalize_client_code(code)
+    if not code:
+        return None
+    path = resolve_path(config, "clients_dir") / f"{code}.yaml"
+    h = hashlib.sha256(path.read_bytes() if path.is_file() else b"(no client file)")
+    h.update(json.dumps((config.get("_color_clients") or {}).get(code) or {}, sort_keys=True).encode("utf-8"))
+    return h.hexdigest()[:12]
 
 
 def build_docx_report(result: QCResult, output_dir: Path | None = None) -> Path:

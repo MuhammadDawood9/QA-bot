@@ -197,6 +197,10 @@ def write_docx(data: ReportData) -> Path:
         ("Generated", f"{info.generated:%Y-%m-%d %H:%M}"),
         ("Rules version", info.rules_version or "unknown"),
     ]
+    if info.client_rules_version:
+        facts.append(("Client rules version", info.client_rules_version))
+    if info.app_version:
+        facts.append(("App version", f"Video QC Bot {info.app_version}"))
     for name, value in facts:
         p = doc.add_paragraph()
         p.add_run(f"{name}: ").bold = True

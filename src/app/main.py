@@ -14,6 +14,8 @@ import argparse
 import logging
 import logging.handlers
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Sequence
 
@@ -28,10 +30,12 @@ from src.app.mascot import MascotWindow
 from src.app.settings import APP_NAME, Settings, log_dir
 from src.app.worker import CheckRunner
 from src.config import PROJECT_ROOT, is_frozen, load_config
-from src import ignore
 from src.engine import known_clients
 from src.platform import current as platform
+from src.shared import current_floor, role_for, set_floor
+from src.utils.safe_io import current_user
 from src.utils.system import MissingToolError, find_ffmpeg
+from src.version import __version__
 
 log = logging.getLogger("qcbot.app")
 LOG_FILE_NAME = "videoqcbot.log"
@@ -60,6 +64,22 @@ class CompanionApp:
         self.runner.failed.connect(self._on_failed)
         self.runner.cancelled.connect(self._on_cancelled)
         self.runner.idle.connect(self._start_next)
+        self.runner.warning.connect(lambda message: self.notify("Video QC Bot", message, error=True))
+
+        # The shared folder: refreshed in the background every minute (and before each check, in the
+        # worker), so edits from other PCs apply without a restart. Watched for going offline.
+        self.floor = current_floor()
+        self.editor_unlocked = False             # the editor PIN was entered this session
+        self._seen = (self.floor.online, self.floor.last_sync)
+        self._syncing = False
+        self.sync_timer = QTimer()
+        self.sync_timer.timeout.connect(self.sync_in_background)
+        self.watch_timer = QTimer()
+        self.watch_timer.timeout.connect(self._watch_floor)
+        if self.floor.shared:
+            self.sync_timer.start(60_000)
+            self.watch_timer.start(2_000)
+            self.sync_in_background()
 
         self.tray = self._make_tray()
         app.aboutToQuit.connect(self.mascot.remember_position)
@@ -92,8 +112,15 @@ class CompanionApp:
 
     def fill_menu(self, menu: QMenu) -> QMenu:
         """The same items for the mascot's right-click menu and the tray icon's menu."""
+        if self.floor.shared and (self.floor.last_sync is None or time.time() - self.floor.last_sync > 30):
+            self.sync_in_background()
+        version = menu.addAction(f"Video QC Bot {__version__}")
+        version.setEnabled(False)
         status = menu.addAction(self.status)
         status.setEnabled(False)
+        if self.floor.shared and self.floor.online is False:
+            offline = menu.addAction(self.floor.status_text())
+            offline.setEnabled(False)
         menu.addSeparator()
 
         menu.addAction("Check a video...", self.pick_video)        # while busy: added to the queue
@@ -121,9 +148,15 @@ class CompanionApp:
             action.setActionGroup(group)
             action.triggered.connect(lambda _=False, c=code: self.settings.set("last_client", c))
         clients.addSeparator()
-        clients.addAction("Add new client...", self.add_client)
-        clients.addAction("Edit client...", self.edit_client).setEnabled(bool(self.clients))
+        role = self.role
+        for label, slot, enabled in (("Add new client...", self.add_client, role.editor),
+                                     ("Edit client...", self.edit_client, role.editor and bool(self.clients))):
+            action = clients.addAction(label, slot)
+            action.setEnabled(enabled)
+            if not role.editor:
+                action.setToolTip(f"Editors only ({role.why})")
         clients.addAction("Get client template", self.save_client_template)
+        clients.setToolTipsVisible(True)
 
         skins = menu.addMenu("Skin")
         skin_group = QActionGroup(skins)
@@ -151,9 +184,17 @@ class CompanionApp:
         last = self.settings.get("last_report")
         menu.addAction("Open last report", self.open_last_report).setEnabled(bool(last) and Path(last).is_file())
         menu.addAction("Open reports folder", self.open_reports_folder)
-        menu.addAction("Edit ignore list", self.open_ignore_list)
-        menu.addAction("Edit glossary", self.open_glossary)
+        word = "Edit" if self.role.editor else "View"
+        menu.addAction(f"{word} ignore list", self.open_ignore_list)
+        menu.addAction(f"{word} glossary", self.open_glossary)
         menu.addAction("Settings...", self.open_settings)
+        if self.floor.shared:
+            if self.editor_unlocked:
+                menu.addAction("Leave editor mode", self.leave_editor_mode)
+            elif not self.role.editor:
+                menu.addAction("Editor mode...", self.enter_editor_mode)
+        menu.addAction("Check for update", self.check_for_update)
+        menu.addAction("Copy diagnostics", self.copy_diagnostics)
         login = menu.addAction("Start at login")
         login.setCheckable(True)
         login.setChecked(platform.launch_at_login_enabled())
@@ -243,7 +284,8 @@ class CompanionApp:
         log.info(self.status)
         self.mascot.set_state("working")
         self.mascot.set_progress("Starting", 0.0)
-        self.runner.start(video, client, qc_options(self.settings.get("disabled_checks") or []), self.reports_dir)
+        self.runner.start(video, client, qc_options(self.settings.get("disabled_checks") or []), self.reports_dir,
+                          shared_reports=self.shared_reports_dir())
 
     def cancel_check(self) -> None:
         if self.runner.busy:
@@ -298,13 +340,18 @@ class CompanionApp:
     # --- clients ---------------------------------------------------------------------------
 
     def client_store(self):
+        """Clients are read from and saved to the shared folder itself (not the cached copy), under
+        the shared lock. Raises SharedUnavailable when it can't be reached."""
         from src.clients.store import ClientStore
 
-        return ClientStore(self.config)
+        return ClientStore(self.config, lock=self.floor.lock, root=self.floor.write_root)
 
     def client_names(self) -> dict:
+        """From the cached copy: building a menu never waits for the network."""
+        from src.clients.store import ClientStore
+
         try:
-            return self.client_store().names()
+            return ClientStore(self.config).names()
         except OSError as exc:
             log.warning("couldn't read the client names: %s", exc)
             return {}
@@ -313,11 +360,30 @@ class CompanionApp:
         self.config = load_config()
         self.clients = known_clients(self.config)
 
+    def _editor_or_say_why(self) -> bool:
+        role = self.role
+        if not role.editor:
+            QMessageBox.information(None, "Video QC Bot", f"Only editors can change clients ({role.why}).")
+        return role.editor
+
+    def _store_or_say_why(self):
+        from src.shared import SharedUnavailable
+
+        try:
+            return self.client_store()
+        except SharedUnavailable as exc:
+            QMessageBox.warning(None, "Video QC Bot", str(exc))
+            return None
+
     def add_client(self) -> None:
         from src.app.client_dialogs import ClientDialog
 
-        dialog = ClientDialog(self.client_store(), self.config, None, last_folder=self.settings.get("last_folder"))
+        store = self._store_or_say_why() if self._editor_or_say_why() else None
+        if store is None:
+            return
+        dialog = ClientDialog(store, self.config, None, last_folder=self.settings.get("last_folder"))
         if dialog.exec() and dialog.saved_code:
+            self.floor.sync()
             self.refresh_clients()
             self.settings.set("last_client", dialog.saved_code)
             self.notify("Client added", f"{dialog.saved_code} is saved and selected.")
@@ -327,6 +393,8 @@ class CompanionApp:
 
         from src.app.client_dialogs import ClientDialog
 
+        if not self._editor_or_say_why():
+            return
         self.refresh_clients()
         if not self.clients:
             return
@@ -338,8 +406,12 @@ class CompanionApp:
         if not ok:
             return
         code = self.clients[labels.index(label)]
-        dialog = ClientDialog(self.client_store(), self.config, code, last_folder=self.settings.get("last_folder"))
+        store = self._store_or_say_why()
+        if store is None:
+            return
+        dialog = ClientDialog(store, self.config, code, last_folder=self.settings.get("last_folder"))
         if dialog.exec() and dialog.saved_code:
+            self.floor.sync()
             self.refresh_clients()
             self.notify("Client saved", f"{code}: changes saved (previous version backed up).")
 
@@ -370,23 +442,195 @@ class CompanionApp:
         self.reports_dir.mkdir(parents=True, exist_ok=True)
         open_path(self.reports_dir)
 
-    def open_glossary(self) -> None:
-        """glossary.txt (names and brands the spelling check accepts) in the default editor."""
-        from src.config import resolve_path
+    def _edit_shared_file(self, key: str, title: str, starter: str = "") -> None:
+        """A shared text file in the app's own editor: saved under the shared lock, with a backup
+        and a changelog line. View only for non-editors and when the shared folder is offline."""
+        from src.app.floor_dialogs import TextFileDialog
 
-        open_path(resolve_path(self.config, "glossary_file"))
+        name = (self.config.get("paths") or {}).get(key) or key
+        role = self.role
+        if TextFileDialog(self.floor, name, title, role.editor, role.why, starter=starter).exec():
+            self.refresh_clients()
+
+    def open_glossary(self) -> None:
+        """glossary.txt: names and brands the spelling check accepts."""
+        self._edit_shared_file("glossary_file", "Glossary")
 
     def open_ignore_list(self) -> None:
-        """ignore.yaml in the default editor (created empty if it was deleted)."""
-        path = ignore.ignore_file(self.config)
-        if not path.is_file():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("# Flags you decided are fine; copy lines from a report's \"Hide a flag next time\".\n"
-                            "ignore:\n", encoding="utf-8")
-        open_path(path)
+        """ignore.yaml: flags you decided are fine."""
+        self._edit_shared_file("ignore_file", "Ignore list",
+                               starter="# Flags you decided are fine; copy lines from a report's \"Hide a flag next "
+                                       "time\".\nignore:\n")
 
     def open_settings(self) -> None:
-        SettingsDialog(self.settings, self.default_reports_dir).exec()
+        from src.config import save_local_settings
+        from src.machine import choose_whisper_model, cpu_count, ram_gb
+
+        local_model = ((self.config.get("_machine") or {}).get("whisper_model_size") == "auto" and "auto") or \
+            self.config.get("machine", {}).get("whisper_model_size", "auto")
+        shared_reports = self.floor.setup.shared_reports if self.floor.shared else None
+        dialog = SettingsDialog(
+            self.settings, self.default_reports_dir, floor_text=self.floor.status_text(),
+            on_change_floor=self.change_floor, whisper_model=local_model,
+            auto_model=choose_whisper_model(cpu_count(), ram_gb()), shared_reports=shared_reports,
+            shared_copy_default=self.shared_copy_default(),
+            on_set_pin=self.set_editor_pin if self.floor.shared and self.role.editor else None)
+        if dialog.exec() and dialog.whisper_choice is not None and dialog.whisper_choice != local_model:
+            local = self.config.get("_local_root") or self.config["_root"]
+            save_local_settings(local, {"machine": {"whisper_model_size": dialog.whisper_choice}})
+            self.refresh_clients()
+
+    # --- the floor ---------------------------------------------------------------------------
+
+    @property
+    def role(self):
+        return role_for(self.floor, current_user(), self.editor_unlocked)
+
+    def sync_in_background(self) -> None:
+        if not self.floor.shared or self._syncing:
+            return
+        self._syncing = True
+
+        def run():
+            try:
+                self.floor.sync()
+            finally:
+                self._syncing = False
+
+        threading.Thread(target=run, daemon=True, name="shared-sync").start()
+
+    def _watch_floor(self) -> None:
+        """On the main thread: react to what the background sync found."""
+        seen = (self.floor.online, self.floor.last_sync)
+        if seen == self._seen:
+            return
+        was_online = self._seen[0]
+        self._seen = seen
+        if self.floor.online is False and was_online is not False:
+            self.notify("Offline, using cached rules", f"The shared folder can't be reached. Checks use the rules "
+                                                       f"copied {self.floor.cache_time() or 'earlier'}.", error=True)
+        elif self.floor.online and was_online is False:
+            self.notify("Back online", "The shared rules are up to date again.")
+        if self.floor.online:
+            self.refresh_clients()
+        self._update_tray_tip()
+
+    def _update_tray_tip(self) -> None:
+        if self.tray is not None:
+            offline = self.floor.shared and self.floor.online is False
+            self.tray.setToolTip("Video QC Bot (offline, using cached rules)" if offline else "Video QC Bot")
+
+    def shared_copy_default(self) -> bool:
+        return bool(((self.config.get("_shared_settings") or {}).get("reports") or {}).get("copy_to_shared"))
+
+    def shared_reports_dir(self) -> Path | None:
+        if not self.floor.shared or self.floor.setup.shared_reports is None:
+            return None
+        chosen = self.settings.get("copy_reports_to_shared")
+        return self.floor.setup.shared_reports if (self.shared_copy_default() if chosen is None else chosen) else None
+
+    def change_floor(self, parent=None) -> None:
+        from src.app.floor_dialogs import SetupDialog
+
+        if SetupDialog(self.floor.shared_dir, parent).exec():
+            set_floor(None)
+            self.floor = current_floor()
+            self.floor.sync()
+            self.editor_unlocked = False
+            for timer in (self.sync_timer, self.watch_timer):
+                timer.stop()
+            if self.floor.shared:
+                self.sync_timer.start(60_000)
+                self.watch_timer.start(2_000)
+            self.refresh_clients()
+            self._update_tray_tip()
+
+    def enter_editor_mode(self) -> None:
+        from PySide6.QtWidgets import QInputDialog, QLineEdit
+
+        from src.shared import shared_settings, verify_pin
+
+        stored = shared_settings(self.floor.data_root).get("editor_pin")
+        if not stored:
+            QMessageBox.information(None, "Video QC Bot", "No editor PIN is set up. Ask an editor to add your login "
+                                    f"name ({current_user()}) to the editors list, or to set a PIN.")
+            return
+        pin, ok = QInputDialog.getText(None, "Editor mode", "Editor PIN:", QLineEdit.EchoMode.Password)
+        if not ok:
+            return
+        if verify_pin(pin, stored):
+            self.editor_unlocked = True
+            self.notify("Editor mode", "You can add and edit clients until you quit or leave editor mode.")
+        else:
+            QMessageBox.warning(None, "Video QC Bot", "That PIN isn't right.")
+
+    def leave_editor_mode(self) -> None:
+        self.editor_unlocked = False
+
+    def set_editor_pin(self, parent=None) -> None:
+        from PySide6.QtWidgets import QInputDialog, QLineEdit
+
+        from src.shared import LockBusy, SharedUnavailable, set_editor_pin
+
+        pin, ok = QInputDialog.getText(parent, "Editor PIN", "New editor PIN (at least 4 characters). Everyone who "
+                                       "knows it can edit clients:", QLineEdit.EchoMode.Password)
+        if not ok:
+            return
+        again, ok = QInputDialog.getText(parent, "Editor PIN", "The same PIN again:", QLineEdit.EchoMode.Password)
+        if not ok:
+            return
+        if pin != again:
+            QMessageBox.warning(parent, "Video QC Bot", "The two PINs aren't the same; nothing was changed.")
+            return
+        try:
+            set_editor_pin(self.floor, pin)
+        except (ValueError, LockBusy, SharedUnavailable, OSError) as exc:
+            QMessageBox.warning(parent, "Video QC Bot", str(exc))
+            return
+        QMessageBox.information(parent, "Video QC Bot", "Editor PIN saved (stored hashed in the shared settings).")
+
+    def check_for_update(self, quiet: bool = False) -> None:
+        """Compare with latest.json in the shared folder; say where the new installer is. Never installs."""
+        from src.version import check_for_update
+
+        latest = Path(self.config["_root"]) / "latest.json"
+        info = check_for_update(latest)
+        if info is None:
+            if not quiet:
+                where = "" if latest.is_file() else " (no latest.json in the shared folder)"
+                QMessageBox.information(None, "Video QC Bot", f"Video QC Bot {__version__} is the newest version{where}.")
+            return
+        if quiet:
+            if self.settings.get("last_update_seen") == info.version:
+                return
+            self.settings.set("last_update_seen", info.version)
+            self.notify("Update available", f"Video QC Bot {info.version} is available. Right-click > Check for update.")
+            return
+        box = QMessageBox()
+        box.setWindowTitle("Video QC Bot")
+        box.setText(f"Video QC Bot {info.version} is available (you have {__version__}).")
+        box.setInformativeText((info.notes + "\n\n" if info.notes else "") +
+                               (f"Installer: {info.installer}\n\nClose Video QC Bot, then run the new installer "
+                                f"(or ask IT)." if info.installer else "Ask IT for the new installer."))
+        show = box.addButton("Show the installer", QMessageBox.ButtonRole.ActionRole) if info.installer else None
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        if show is not None and box.clickedButton() is show:
+            target = Path(info.installer)
+            open_path(target.parent if target.suffix else target)
+
+    def copy_diagnostics(self) -> None:
+        from src.diagnostics import collect
+
+        role = self.role
+        text = collect(self.config, self.settings.data, self.log_file, f"{role.editor} ({role.why})")
+        QApplication.clipboard().setText(text)
+        try:
+            (self.log_file.parent / "diagnostics.txt").write_text(text, encoding="utf-8")
+        except OSError:
+            pass
+        self.notify("Diagnostics copied", "Paste them into your message to support. Also saved as diagnostics.txt "
+                                          "in the log folder.")
 
     def set_start_at_login(self, enabled: bool) -> None:
         try:
@@ -415,6 +659,7 @@ class CompanionApp:
             return False
 
     def show_mascot(self) -> None:
+        self._update_tray_tip()
         self.mascot.show()
         self.mascot.raise_()
 
@@ -453,7 +698,7 @@ def selftest() -> int:
 
     problems = 0
     for module in ("faster_whisper", "ctranslate2", "onnxruntime", "rapidocr_onnxruntime", "cv2", "av", "docx",
-                   "spellchecker", "rapidfuzz", "openpyxl", "anthropic", "src.engine"):
+                   "spellchecker", "rapidfuzz", "openpyxl", "anthropic", "pypdf", "imageio_ffmpeg", "src.engine"):
         try:
             importlib.import_module(module)
             report(f"ok      import {module}")
@@ -477,6 +722,10 @@ def selftest() -> int:
     from rapidocr_onnxruntime import RapidOCR
     RapidOCR()
     report("ok      OCR models load")
+    from src.utils.system import bundled_ffmpeg
+    ff = bundled_ffmpeg()
+    problems += ff is None and is_frozen()
+    report(f"{'ok' if ff else 'MISSING':<7} bundled ffmpeg: {ff}")
     report("all good" if problems == 0 else f"{problems} problem(s)")
     return 0 if problems == 0 else 1
 
@@ -494,6 +743,8 @@ def check_without_window(video: Path, client: str | None) -> int:
             last["stage"] = stage
             log.info("check: %s", stage)
 
+    platform.lower_priority()
+    current_floor().sync()
     try:
         result = run_qc(video, client, progress, options=qc_options(["punctuation"]))
         report = build_docx_report(result)
@@ -553,13 +804,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         return selftest()
     if args.check:
         return check_without_window(args.check, args.client)
-    log.info("starting; log file %s", log_file)
+    log.info("starting Video QC Bot %s; log file %s", __version__, log_file)
+    if platform.lower_priority():
+        log.info("running below normal CPU priority, so editing on this PC stays smooth")
 
     app = make_application(argv)
+    if current_floor().setup.needs_setup:
+        from src.app.floor_dialogs import SetupDialog
+
+        SetupDialog().exec()                 # cancelled: asked again next time; works alone meanwhile
+        set_floor(None)
+    floor = current_floor()
+    log.info("rules: %s", floor.setup.source)
+    floor.sync()
     companion = CompanionApp(app, Settings(), demo=args.demo)
     companion.show_mascot()
     companion.refresh_start_at_login()
     QTimer.singleShot(500, companion.check_tools)
+    QTimer.singleShot(3000, lambda: companion.check_for_update(quiet=True))
     return app.exec()
 
 

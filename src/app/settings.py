@@ -33,6 +33,8 @@ DEFAULTS: dict = {
     "last_folder": None,                    # where the file picker opens
     "skin": "avatar",                       # assets/mascot/<skin>/
     "idle_blink": False,                    # a random blink every 5-10 s, besides the blink on hover
+    "copy_reports_to_shared": None,         # None = as shared_settings.yaml says; True / False = this user's choice
+    "last_update_seen": None,               # the newest version already announced, so it's said once
 }
 
 

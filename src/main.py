@@ -124,6 +124,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.srt is None and args.video is None:
         parser.error("give --video (captions are read from it) or --srt")
 
+    if args.config is None:
+        from src.shared import current_floor
+
+        floor = current_floor()
+        if floor.shared and not floor.sync():
+            print(f"warning: {floor.status_text()}", file=sys.stderr)
     options = QCOptions(srt_path=args.srt, use_llm=not args.no_llm, check_color=not args.no_color,
                         config_path=args.config)
     try:
