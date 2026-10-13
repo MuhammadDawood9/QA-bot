@@ -9,6 +9,8 @@ from typing import Iterable, Sequence
 from src.engine import QCOptions, guess_client
 
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".m4v", ".mkv", ".avi", ".mxf", ".webm")
+AUDIO_EXTENSIONS = (".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg")     # podcasts: the audio checks only
+MEDIA_EXTENSIONS = VIDEO_EXTENSIONS + AUDIO_EXTENSIONS
 
 # (key, menu label). Keys are the engine's check names, plus "color".
 CHECK_TOGGLES: list[tuple[str, str]] = [
@@ -20,6 +22,7 @@ CHECK_TOGGLES: list[tuple[str, str]] = [
     ("transcript", "Captions vs audio"),
     ("screen_text", "Names vs on-screen graphics"),
     ("color", "Color grading"),
+    ("audio", "Audio edits (stutters, cuts, dead air)"),
 ]
 OFF_BY_DEFAULT = {"punctuation"}          # the Anthropic API is paid per video; switched on by choice
 # Shown in the Checks menu only when an admin turned them on in config.yaml (checks.<name>.enabled).
@@ -34,7 +37,8 @@ def visible_toggles(config: dict) -> list[tuple[str, str]]:
 
 
 def is_video(path: Path) -> bool:
-    return path.suffix.lower() in VIDEO_EXTENSIONS
+    """A file the app checks: a video, or an audio file (podcast)."""
+    return path.suffix.lower() in MEDIA_EXTENSIONS
 
 
 def videos_in(paths: Iterable[Path]) -> list[Path]:
@@ -50,8 +54,9 @@ def videos_in(paths: Iterable[Path]) -> list[Path]:
 
 
 def file_dialog_filter() -> str:
-    patterns = " ".join(f"*{ext}" for ext in VIDEO_EXTENSIONS)
-    return f"Videos ({patterns});;All files (*)"
+    videos = " ".join(f"*{ext}" for ext in VIDEO_EXTENSIONS)
+    audio = " ".join(f"*{ext}" for ext in AUDIO_EXTENSIONS)
+    return f"Videos and audio ({videos} {audio});;Videos ({videos});;Audio ({audio});;All files (*)"
 
 
 def choose_client(video: Path, last_client: str | None, guess: bool, known: Sequence[str]) -> tuple[str | None, str]:
@@ -70,4 +75,4 @@ def qc_options(disabled: Iterable[str]) -> QCOptions:
     """Engine options from the checks switched off in the menu."""
     off = frozenset(disabled)
     return QCOptions(use_llm="punctuation" not in off, check_color="color" not in off,
-                     disabled_checks=off - {"color"})
+                     disabled_checks=off - {"color"})          # "audio" stays: the engine reads it

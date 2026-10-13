@@ -238,7 +238,8 @@ class CompanionApp:
 
     def pick_video(self) -> None:
         start = self.settings.get("last_folder") or str(Path.home())
-        names, _ = QFileDialog.getOpenFileNames(None, "Choose videos to check", start, file_dialog_filter())
+        names, _ = QFileDialog.getOpenFileNames(None, "Choose videos or audio files to check", start,
+                                                file_dialog_filter())
         if names:
             self.enqueue([Path(n) for n in names])
 

@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
 
-from src.models import SEVERITIES, Caption, Issue, shot_number
+from src.models import AUDIO_ISSUES, SEVERITIES, Caption, Issue, audio_number, shot_number
 from src.report.screenshots import grab_frame
 from src.utils.timecode import format_timestamp
 
@@ -46,6 +46,12 @@ LABELS = {
     "color_cast": "Color cast (color)",
     "skin_tone": "Skin tone (color)",
     "shot_mismatch": "Shot doesn't match (color)",
+    "stutter": "Stutter (audio)",
+    "repeated_phrase": "Repeated phrase (audio)",
+    "abrupt_cut": "Abrupt cut (audio)",
+    "jump_cut": "Jump cut (audio)",
+    "dead_air": "Dead air (audio)",
+    "filler": "Filler word (audio)",
 }
 _RANK = {s: i for i, s in enumerate(SEVERITIES)}          # high = 0 (worst)
 CSV_COLUMNS = ["timestamp", "seconds", "caption_id", "type", "severity", "caption", "problem",
@@ -62,6 +68,7 @@ class ReportInfo:
     generated: dt.datetime = field(default_factory=dt.datetime.now)
     app_version: str | None = None
     client_rules_version: str | None = None             # hash of the client file (+ its color settings)
+    audio_only: bool = False                            # an audio file: clips and waveforms, no screenshots
 
 
 def captions_source(info: "ReportInfo") -> str:
@@ -69,18 +76,31 @@ def captions_source(info: "ReportInfo") -> str:
 
 
 def caption_title(cid: int) -> str:
-    """Issues not tied to a caption have negative ids: speech with no caption, or a shot (color)."""
+    """Issues not tied to a caption have negative ids: speech with no caption, a shot (color), or
+    a moment in the audio."""
     if cid > 0:
         return f"caption #{cid}"
     shot = shot_number(cid)
-    return f"shot {shot}" if shot is not None else "no caption"
+    if shot is not None:
+        return f"shot {shot}"
+    return "audio" if audio_number(cid) is not None else "no caption"
 
 
 def caption_anchor(cid: int) -> str:
     if cid > 0:
         return f"caption-{cid}"
     shot = shot_number(cid)
-    return f"shot-{shot}" if shot is not None else f"no-caption-{-cid}"
+    if shot is not None:
+        return f"shot-{shot}"
+    n = audio_number(cid)
+    return f"audio-{n}" if n is not None else f"no-caption-{-cid}"
+
+
+def clips_folder_name(info: "ReportInfo") -> str:
+    """Unique per report, and kept when the report is copied to the shared folder, so the Word
+    file's links to its clips work in both places."""
+    stem = (info.video or info.srt).stem
+    return f"{stem}_{info.generated:%Y%m%d-%H%M%S}_clips"
 
 
 def label(issue_type: str) -> str:
@@ -132,6 +152,11 @@ class ReportData:
     shots: dict[int, tuple[str, float]]          # caption id -> (image path relative to folder, frame time)
     wanted_shots: bool                           # screenshots were attempted (a video was given)
     settings: dict
+    clips: dict[int, tuple[str | None, str | None]] = field(default_factory=dict)   # audio issue -> (mp3, png)
+
+    @property
+    def has_audio(self) -> bool:
+        return bool(self.clips) or any(i.type in AUDIO_ISSUES for i in self.issues)
 
     def counts(self) -> Counter:
         return Counter((i.type, i.severity) for i in self.issues)
@@ -161,9 +186,23 @@ def prepare(captions: Sequence[Caption], issues: Sequence[Issue], info: ReportIn
     flagged = sorted(by_caption, key=lambda cid: (caps[cid].start if cid in caps else by_caption[cid][0].timestamp, cid))
 
     shots: dict[int, tuple[str, float]] = {}
+    clips: dict[int, tuple[str | None, str | None]] = {}
     want_shots = bool(settings.get("include_screenshots", True) and info.video is not None and ffmpeg)
     if want_shots:
+        from src.audio.clips import write_clip, write_waveform
+
+        clip_dir = clips_folder_name(info)
         for cid in flagged:
+            first = by_caption[cid][0]
+            if first.type in AUDIO_ISSUES:
+                at = first.timestamp
+                base = f"{int(round(at * 1000)):08d}_{first.type}"
+                mp3, png = f"{clip_dir}/{base}.mp3", f"{clip_dir}/{base}.png"
+                clips[cid] = (mp3 if write_clip(ffmpeg, info.video, at, folder / mp3) else None,
+                              png if write_waveform(ffmpeg, info.video, at, folder / png) else None)
+                continue
+            if info.audio_only:
+                continue
             cap = caps.get(cid)
             at = by_caption[cid][0].timestamp if cap is None else (
                 cap.start if settings.get("screenshot_at", "middle") == "start" else (cap.start + cap.end) / 2)
@@ -173,15 +212,16 @@ def prepare(captions: Sequence[Caption], issues: Sequence[Issue], info: ReportIn
 
     return ReportData(info=info, folder=folder, captions=sorted(captions, key=lambda c: (c.start, c.id)),
                       issues=issues, by_caption=dict(by_caption), caps=caps, flagged=flagged, shots=shots,
-                      wanted_shots=want_shots, settings=settings)
+                      wanted_shots=want_shots, settings=settings, clips=clips)
 
 
 def write_markdown(data: ReportData) -> Path:
     lines = _header(data.info, data.captions, data.issues, data.flagged)
     lines += _summary(data.issues)
     lines += _index(data.flagged, data.by_caption, data.caps)
-    lines += _details(data.flagged, data.by_caption, data.caps, data.shots, data.info, data.wanted_shots)
-    lines += _appendix(data.captions, data.by_caption)
+    lines += _details(data.flagged, data.by_caption, data.caps, data.shots, data.info, data.wanted_shots, data.clips)
+    if data.captions or not data.info.audio_only:
+        lines += _appendix(data.captions, data.by_caption)
     path = data.folder / "report.md"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     return path
@@ -207,8 +247,12 @@ def build_report(captions: Sequence[Caption], issues: Sequence[Issue], info: Rep
 def _header(info, captions, issues, flagged) -> list[str]:
     title = (info.video or info.srt).name
     lines = [f"# QC report: {md(title)}", ""]
-    lines.append(f"- **Video:** {md(info.video.name) if info.video else 'none (caption text checks only)'}")
-    lines.append(f"- **Captions:** {md(captions_source(info))}, {len(captions)} captions")
+    if info.audio_only:
+        lines.append(f"- **Audio:** {md(info.video.name)}")
+        lines.append(f"- **Captions:** {md(info.srt.name) + f', {len(captions)} captions' if info.srt else 'none'}")
+    else:
+        lines.append(f"- **Video:** {md(info.video.name) if info.video else 'none (caption text checks only)'}")
+        lines.append(f"- **Captions:** {md(captions_source(info))}, {len(captions)} captions")
     lines.append(f"- **Client:** {md(info.client or 'default rules')}")
     lines.append(f"- **Generated:** {info.generated:%Y-%m-%d %H:%M}")
     lines.append(f"- **Rules version:** {md(info.rules_version or 'unknown')}")
@@ -219,8 +263,11 @@ def _header(info, captions, issues, flagged) -> list[str]:
     if info.checks:
         lines.append("- **Checks:**")
         lines += [f"  - {md(c)}" for c in info.checks]
-    lines += ["", f"**{len(issues)} issue{'s' if len(issues) != 1 else ''} on {len(flagged)} of "
-              f"{len(captions)} captions.**", ""]
+    if info.audio_only and not captions:
+        lines += ["", f"**{len(issues)} issue{'s' if len(issues) != 1 else ''}.**", ""]
+    else:
+        lines += ["", f"**{len(issues)} issue{'s' if len(issues) != 1 else ''} on {len(flagged)} of "
+                  f"{len(captions)} captions.**", ""]
     return lines
 
 
@@ -255,7 +302,7 @@ def _index(flagged, by_caption, caps) -> list[str]:
     return lines + [""]
 
 
-def _details(flagged, by_caption, caps, shots, info, wanted_shots) -> list[str]:
+def _details(flagged, by_caption, caps, shots, info, wanted_shots, clips=None) -> list[str]:
     if not flagged:
         return []
     lines = ["## Details", ""]
@@ -270,10 +317,16 @@ def _details(flagged, by_caption, caps, shots, info, wanted_shots) -> list[str]:
         lines.append("")
         lines.append(f"> {md(cap.flat_text if cap else group[0].original)}")
         lines.append("")
-        if cid in shots:
+        if clips and cid in clips:
+            mp3, png = clips[cid]
+            if png:
+                lines += [f"![Waveform around {format_timestamp(group[0].timestamp)}]({png.replace(' ', '%20')})", ""]
+            if mp3:
+                lines += [f"[Play the clip (6 s)]({mp3.replace(' ', '%20')})", ""]
+        elif cid in shots:
             image, at = shots[cid]
             lines += [f"![Frame at {format_timestamp(at)}]({image})", "", f"*Frame at {format_timestamp(at)}*", ""]
-        elif wanted_shots:
+        elif wanted_shots and not info.audio_only:
             lines += ["*(no screenshot: ffmpeg could not get a frame at this time)*", ""]
         lines += ["| Problem | Severity | What's wrong | Suggested fix | Confidence |", "|---|---|---|---|---:|"]
         for i in group:

@@ -289,6 +289,8 @@ def findings_from_client(client: dict, color_block: dict | None = None) -> list[
         out.append(Finding("example", dict(ex), src))
     for setting, value in _flatten({k: v for k, v in overrides.items() if v not in ({}, None)}):
         out.append(Finding("check", {"setting": setting, "value": value}, src))
+    for setting, value in _flatten(client.get("audio") or {}, "audio."):      # the audio checks' own block
+        out.append(Finding("check", {"setting": setting, "value": value}, src))
     color_block = dict(color_block or {})
     for kind in color_block.pop("skip", None) or []:
         out.append(Finding("color_skip", str(kind), src))
@@ -346,7 +348,7 @@ def build_client(findings: Iterable[Finding], base: dict | None = None, notes_te
         raise ClientError("Display name: required.")
 
     client = copy.deepcopy(base or {})
-    for key in ("rules", "glossary", "ignore", "examples", "overrides"):
+    for key in ("rules", "glossary", "ignore", "examples", "overrides", "audio"):
         client.pop(key, None)
     client["client"] = code
     client["name"] = str(singles["name"].value).strip()
@@ -362,9 +364,14 @@ def build_client(findings: Iterable[Finding], base: dict | None = None, notes_te
               for f in kept if f.kind == "exception"]
     examples = [{k: v for k, v in f.value.items() if v not in (None, "")} for f in kept if f.kind == "example"]
     overrides: dict = {}
+    audio: dict = {}
     for f in kept:
         if f.kind == "check":
-            _set_path(overrides, f.value["setting"], f.value["value"])
+            setting = f.value["setting"]
+            if setting.startswith("audio."):          # the client file's "audio:" block, not "overrides:"
+                _set_path(audio, setting[len("audio."):], f.value["value"])
+            else:
+                _set_path(overrides, setting, f.value["value"])
     if "min_words" in singles:
         _set_path(overrides, "too_short.min_words", int(singles["min_words"].value))
     for key, value in (("rules", rules), ("glossary", list(dict.fromkeys(glossary))), ("ignore", ignore),
@@ -372,6 +379,8 @@ def build_client(findings: Iterable[Finding], base: dict | None = None, notes_te
         if value:
             client[key] = value
     client["overrides"] = overrides
+    if audio:
+        client["audio"] = audio
 
     ocr = dict(client.get("ocr") or {})
     area = singles.get("caption_area")
@@ -397,7 +406,7 @@ def build_client(findings: Iterable[Finding], base: dict | None = None, notes_te
 
 
 _ORDER = ("client", "name", "project", "language", "notes", "rules", "glossary", "examples", "ignore", "overrides",
-          "ocr", "color")
+          "ocr", "color", "audio")
 
 
 def _ordered(client: dict) -> dict:

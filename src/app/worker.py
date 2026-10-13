@@ -81,9 +81,9 @@ class _Job(QObject):
         from src.utils.safe_io import current_user
 
         try:
-            clips = report.parent / "clips"
+            clips = next((p for p in report.parent.glob("*_clips") if p.is_dir()), None)
             copied = copy_report_to_shared(report, self.shared_reports, self.client, current_user(), self.video,
-                                           extra_folder=clips if clips.is_dir() else None)
+                                           extra_folder=clips)
             log.info("report copied to the shared folder: %s", copied)
         except OSError as exc:
             log.warning("report not copied to the shared folder: %s", exc)

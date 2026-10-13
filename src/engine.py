@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Sequence
 
 from src import ignore
+from src.audio.media import is_audio_only
 from src.audio.transcribe import get_transcript
 from src.checks import CHECKS
 from src.checks.context import CheckContext
@@ -33,6 +34,7 @@ from src.inputs.video_ocr import FULL_FRAME, OcrError, parse_region, read_burned
 from src.inputs.video_pass import read_video_once
 from src.models import (CAPITALIZATION, EXTRA_WORD, MISSING_WORD, PUNCTUATION, REPEATED_WORD, SCREEN_TEXT_MISMATCH,
                         SPACING, SPELLING, WRONG_WORD, Caption, Issue)
+from src.config import deep_merge
 from src.report.builder import ReportInfo, build_report
 from src.utils.dictionary import load_word_list
 from src.utils.glossary import Glossary
@@ -62,6 +64,13 @@ STAGES = [
     ("Transcribing audio", 0.17),
     ("Checking captions", 0.15),
     ("Checking color", 0.02),
+    ("Checking audio edits", 0.0),          # videos only when the client switches audio checks on
+]
+# An audio file (podcast): no picture to read; the time goes into the speech and the audio checks.
+AUDIO_STAGES = [
+    ("Transcribing audio", 0.6),
+    ("Checking audio edits", 0.35),
+    ("Checking captions", 0.05),
 ]
 
 
@@ -83,9 +92,10 @@ class QCResult(list):
     """The issues (a list, sorted by time), plus what a report or a summary needs."""
 
     def __init__(self, issues: Sequence[Issue], *, video: Path | None, srt: Path | None, captions: list[Caption],
-                 config: dict, client: dict, context: CheckContext, checks: list[str]):
+                 config: dict, client: dict, context: CheckContext, checks: list[str], audio_only: bool = False):
         super().__init__(issues)
         self.video, self.srt, self.captions = video, srt, captions
+        self.audio_only = audio_only            # an audio file: no picture, no screenshots (clips instead)
         self.config, self.client, self.context, self.checks = config, client, context, checks
         self.hidden: list[Issue] = []           # flags ignore.yaml hid
 
@@ -113,14 +123,17 @@ def run_qc(video_path: str | Path | None, client: str | None = None,
     if video is None and srt is None:
         raise QCError("Give a video (its captions are read from the picture) or a caption file.")
     if video is not None and not video.is_file():
-        raise QCError(f"Video not found: {video}")
-    stages = _stages(progress_cb, cancel_event)
+        raise QCError(f"File not found: {video}")
+    audio_only = video is not None and is_audio_only(video)
+    stages = _stages(progress_cb, cancel_event, AUDIO_STAGES if audio_only else STAGES)
 
     try:
         config = config if config is not None else load_config(options.config_path)
         client_data = load_client(config, client)
         context = build_context(config, client_data)
         _apply_options(context, options)
+        if audio_only:
+            return _run_audio_file(video, srt, config, client_data, context, options, stages)
 
         stage = stages["Reading the video"]
         stage(0.0)
@@ -162,6 +175,11 @@ def run_qc(video_path: str | Path | None, client: str | None = None,
         stage(0.0)
         issues += _color(video, config, client_data, context, options, stage)
         stage(1.0)
+
+        stage = stages["Checking audio edits"]
+        stage(0.0)
+        issues += _audio_edits(video, config, client_data, context, options, stage, audio_only=False)
+        stage(1.0)
     except (Cancelled, QCError):
         raise
     except (SrtError, OcrError, MissingToolError) as exc:
@@ -181,6 +199,109 @@ def run_qc(video_path: str | Path | None, client: str | None = None,
     return result
 
 
+def _run_audio_file(path: Path, srt: Path | None, config: dict, client: dict, context: CheckContext,
+                    options: QCOptions, stages: dict) -> "QCResult":
+    """An audio file (a podcast): the audio-edit checks, and the caption text checks only when a
+    caption file is given. Nothing reads a picture (no OCR, no on-screen text, no color)."""
+    for name in ("screen_text", "transcript"):         # no picture; no captions to compare with speech
+        if name != "transcript" or srt is None:
+            context.settings[name] = {**context.settings_for(name), "enabled": False}
+    context.stats["audio_file"] = True
+    context.stats["audio_srt"] = srt is not None
+    captions = load_srt(srt) if srt is not None else []
+    try:
+        stage = stages["Transcribing audio"]
+        stage(0.0)
+        settings = audio_settings(config, client, audio_only=True)
+        words = _disfluent_transcript(path, config, context, settings, stage) if settings.get("enabled") else None
+        stage(1.0)
+        stage = stages["Checking audio edits"]
+        stage(0.0)
+        issues = _audio_edits(path, config, client, context, options, stage, audio_only=True, words=words)
+        stage(1.0)
+        if srt is not None and context.settings_for("transcript").get("enabled", False):
+            context.transcript = get_transcript(
+                path, config.get("machine", {}), context.settings_for("transcript"), context.glossary.all_terms(),
+                resolve_path(config, "transcript_cache_dir"), model_dirs(config))
+        issues += run_checks(captions, config, client, context, stage=stages["Checking captions"])
+    except (Cancelled, QCError):
+        raise
+    except (SrtError, MissingToolError) as exc:
+        raise QCError(str(exc)) from exc
+    except (OSError, RuntimeError) as exc:
+        raise QCError(f"{type(exc).__name__}: {exc}") from exc
+    issues = sorted(issues, key=lambda i: (i.timestamp, i.caption_id))
+    issues, hidden = _ignored(issues, config, client, path)
+    checks = check_status_lines(context, path, options)
+    if hidden:
+        checks.append(f"Ignore list: {len(hidden)} flag{'s' if len(hidden) != 1 else ''} hidden "
+                      f"({ignore.ignore_file(config).name})")
+    result = QCResult(issues, video=path, srt=srt, captions=captions, config=config, client=client, context=context,
+                      checks=checks, audio_only=True)
+    result.hidden = hidden
+    return result
+
+
+def audio_settings(config: dict, client: dict, audio_only: bool) -> dict:
+    """config.yaml "audio:" with the client file's "audio:" block laid over it; "enabled: auto"
+    becomes on for audio files and off for videos."""
+    settings = deep_merge(config.get("audio") or {}, (client or {}).get("audio") or {})
+    enabled = settings.get("enabled", "auto")
+    settings["enabled"] = audio_only if str(enabled).lower() == "auto" else bool(enabled)
+    return settings
+
+
+def _disfluent_transcript(path: Path, config: dict, context: CheckContext, settings: dict, stage: Stage) -> list:
+    """Whisper's words with timestamps, asked to keep "um", "I- I" and false starts. Cached like
+    the caption transcript (the prompt and the setting are part of the cache key)."""
+    whisper = {**context.settings_for("transcript"),
+               "initial_prompt_prefix": settings.get("disfluency_prompt", ""),
+               "condition_on_previous_text": bool(settings.get("condition_on_previous_text", False)),
+               "vad_filter": bool(settings.get("whisper_vad", False))}
+    words = get_transcript(path, config.get("machine", {}), whisper, context.glossary.all_terms(),
+                           resolve_path(config, "transcript_cache_dir"), model_dirs(config), progress=stage)
+    context.stats["transcript"] = {"model": config.get("machine", {}).get("whisper_model_size", "base")}
+    return words
+
+
+def _audio_edits(path: Path | None, config: dict, client: dict, context: CheckContext, options: QCOptions,
+                 stage: Stage, audio_only: bool, words: list | None = None) -> list[Issue]:
+    """Stutters, repeats, retakes, cuts and dead air (src/audio/edits.py), when the client's audio
+    settings switch them on (always for an audio file unless the client says no)."""
+    settings = audio_settings(config, client, audio_only)
+    if path is None or not settings.get("enabled") or "audio" in options.disabled_checks:
+        if "audio" in options.disabled_checks:
+            context.stats["audio"] = {"skipped": "switched off for this run"}
+        return []
+    from src.audio.edits import check_audio, effective_settings
+    from src.audio.media import load_audio
+
+    ffmpeg = find_ffmpeg(config.get("machine", {}).get("ffmpeg_path"))
+    if words is None:
+        words = _disfluent_transcript(path, config, context, settings, stage)
+    stage(0.2)
+    sr = int(settings.get("sample_rate", 16000))
+    samples = load_audio(path, ffmpeg, sr)
+    stage(0.4)
+    s = effective_settings(settings)
+    stage(0.5)
+
+    def plain_words():
+        """Whisper as for captions (no disfluency prompt, voice filter on): only asked for when the
+        disfluent pass skipped a stretch of speech. Cached like every transcript."""
+        log.info("the disfluent transcript skipped some speech; filling it from a plain transcript")
+        return get_transcript(path, config.get("machine", {}), context.settings_for("transcript"),
+                              context.glossary.all_terms(), resolve_path(config, "transcript_cache_dir"),
+                              model_dirs(config))
+
+    issues, stats = check_audio(samples, sr, words, settings, None, backup_words=plain_words)
+    stats["sensitivity"] = str(settings.get("sensitivity", "medium"))
+    stats["checks"] = [k for k, v in (s.get("checks") or {}).items() if v]
+    context.stats["audio"] = stats
+    log.info("audio edits: %d issue(s) in %.0f s of audio", len(issues), stats.get("duration", 0))
+    return issues
+
+
 def _ignored(issues: list[Issue], config: dict, client: dict, video: Path | None) -> tuple[list[Issue], list[Issue]]:
     """Issues minus the ones ignore.yaml hides; (kept, hidden)."""
     rules = ignore.load_rules(ignore.ignore_file(config))
@@ -195,9 +316,9 @@ def _ignored(issues: list[Issue], config: dict, client: dict, video: Path | None
     return kept, hidden
 
 
-def _stages(progress_cb, cancel_event) -> dict[str, Stage]:
+def _stages(progress_cb, cancel_event, table=None) -> dict[str, Stage]:
     out, start = {}, 0.0
-    for name, span in STAGES:
+    for name, span in table or STAGES:
         out[name] = Stage(progress_cb, cancel_event, name, start, span)
         start += span
     return out
@@ -350,11 +471,16 @@ def check_status_lines(context: CheckContext, video: Path | None, options: QCOpt
              "punctuation": "Punctuation (Anthropic API)", "transcript": "Captions vs audio (Whisper)",
              "screen_text": "Names vs on-screen graphics"}
     lines = []
+    audio_file = bool(context.stats.get("audio_file"))
+    if audio_file and not context.stats.get("audio_srt"):
+        lines.append("Caption checks: not run (an audio file and no caption file)")
     for name in CHECKS:
         settings = context.settings_for(name)
         title = names.get(name, name)
         if name == "punctuation" and not context.configured.get(name, settings.get("enabled")):
             continue                    # the API check is off in config: not mentioned at all
+        if audio_file and (name == "screen_text" or not context.stats.get("audio_srt")):
+            continue
         if name in options.disabled_checks:
             lines.append(f"{title}: switched off for this run")
         elif name == "punctuation":
@@ -380,6 +506,19 @@ def check_status_lines(context: CheckContext, video: Path | None, options: QCOpt
                 lines.append(f"{title}: Whisper '{model}', {len(context.transcript)} words heard")
         else:
             lines.append(f"{title}: {'ran' if settings.get('enabled') else 'off in config'}")
+    audio = context.stats.get("audio")
+    if audio and audio.get("skipped"):
+        lines.append(f"Audio edits: {audio['skipped']}")
+    elif audio:
+        fillers = ", ".join(f"{k} {v}" for k, v in sorted(audio.get("fillers", {}).items(), key=lambda kv: -kv[1]))
+        lines.append(f"Audio edits ({audio.get('sensitivity', 'medium')} sensitivity): {audio.get('duration', 0):.0f} s "
+                     f"checked, {audio.get('words', 0)} words heard; checks: {', '.join(audio.get('checks', []))}"
+                     + (f"; filler words: {fillers}" if fillers else "; no filler words"))
+    elif context.stats.get("audio_file"):
+        lines.append("Audio edits: off for this client")
+    if audio_file:
+        lines.append("Picture checks (captions in the picture, on-screen text, color): not run (audio file)")
+        return lines
     color = context.stats.get("color")
     if color and color.get("skipped"):
         lines.append(f"Color grading: skipped ({color['skipped']})")
@@ -418,7 +557,8 @@ def write_report(result: QCResult, formats: Sequence[str] | None = None,
 
     info = ReportInfo(srt=result.srt, video=result.video, client=result.client.get("client"),
                       rules_version=rules_version, checks=result.checks, app_version=__version__,
-                      client_rules_version=client_rules_version(config, result.client.get("client")))
+                      client_rules_version=client_rules_version(config, result.client.get("client")),
+                      audio_only=getattr(result, "audio_only", False))
     return build_report(result.captions, list(result), info, settings, ffmpeg)
 
 

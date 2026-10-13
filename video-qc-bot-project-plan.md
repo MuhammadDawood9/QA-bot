@@ -1012,6 +1012,56 @@ Not built on purpose: ClickUp sync, creative-direction checks, PDF reports.
   lines; to the clipboard and `diagnostics.txt` in the log folder. Whether an API key is set, never its value.
 - **The CLI** (`python -m src.main`) refreshes the cached copy once at start when a shared folder is set.
 
+- **E2CL has no notes in the QC spreadsheet** (Phase 4). Its podcast audio-edit notes ("Stutter on word got",
+  "Word repeat", "Abrupt cut", "Silence not removed": 158 of them, 7 episodes) are all under **E2CS** (the
+  "Episode NNN - Market" podcast tasks). The evaluation template takes audio notes from E2CL and E2CS
+  (`AUDIO_CLIENTS` in scripts/evaluate.py) and E2CL got its own client file; E2CS's file is unchanged (it also
+  has caption work). If E2CL is meant to be E2CS, add an `audio:` block to E2CS.yaml (or copy E2CL's).
+- **Audio files skip every picture check** and run the audio checks; caption checks run only when an SRT is
+  given (`--srt`). `audio.enabled: auto` (default) = on for audio files, off for videos; a client file says
+  `true` (also on videos) or `false`. *Checks > Audio edits* in the menu switches them off for a run.
+- **Thresholds**: config.yaml `audio:` has the commented defaults; `clients/E2CL.yaml` spells out every one
+  (as asked: "all thresholds and sensitivity levels live in the client file"); `sensitivity: low|medium|high`
+  picks a column from `levels:` (acoustic similarity, retake similarity, click ratio, room tone dB, loudness
+  jump dB, cut score, dead air seconds). The client editor (Phase 2) round-trips the whole block as
+  `audio.<key> = value` settings, and the template's Checks sheet takes `audio | sensitivity | high`.
+- **Whisper for the audio checks**: a disfluency prompt and `condition_on_previous_text: false`, as asked, but
+  **with the voice-activity filter off**: on the text-to-speech sample the prompt plus the filter made Whisper
+  (base and small) drop a whole 20 s stretch. With the filter off it kept everything and wrote "short answer,
+  short answer"; without the prompt it wrote "rate rates" but tidied the phrase repeat away. So: the prompt
+  without the filter, and when the transcript still leaves 5 s+ of speech (judged by the sound) without words,
+  those stretches are filled from the plain (caption-style) transcript, asked for only then. Words Whisper
+  writes into silence (a classic "Thank you." in a pause) are ignored for repeats (speech share < 30%). Both
+  transcripts are cached like the caption one; the prompt and the new setting are in the cache key only when
+  set, so existing caption transcripts keep their keys.
+- **Repeats Whisper hides**: cepstral features (12 MFCC-style coefficients, numpy only) compared at every lag
+  of 150-800 ms (vectorized: the mean over L frames of frame t vs t+L); a repeat must also be clearly less alike
+  at half its length (not a held vowel), mostly speech, similar in level, start with an onset in both copies,
+  and overlap transcript words (not a music loop). Acoustic and transcript findings at the same moment merge
+  into one, surer flag that keeps the transcript's type and wording.
+- **Cuts**: evidence at candidate points (word boundaries, pauses, a 0.5 s grid for room tone, and wherever a
+  signal fires) combined as independent chances: click (a sample jump vs the 4 ms around it), speech stopping
+  with no fade or into digital silence, the timbre changing at once where two words touch while the sound is
+  still loud and not fading (measured at 5 ms steps so frame alignment doesn't matter), a short unsure word still
+  loud at its end, background level/spectrum change (median of 0.4 s+ of pauses each side, 3 s windows, the
+  strongest point within 3 s kept), speech level change, and no pause between sentences. Any abrupt evidence
+  makes it `abrupt_cut`, otherwise `jump_cut`.
+- **Dead air from the 20 ms level, not ffmpeg silencedetect**: silencedetect judges every sample, so the peaks of
+  room-tone hiss (-56 dBFS RMS has peaks over -45) count as sound and a 5 s pause in a podcast was never
+  "silence". A frame is silent below -60 dBFS or within 8 dB of the local noise floor. ffmpeg still decodes the
+  audio (any format, to mono float at 16 kHz, through a pipe: no temp file) and writes the clips.
+- **No new dependencies for Phase 4**: numpy (already pinned) does the features; scipy, soundfile and librosa
+  weren't needed. ffmpeg (bundled since Phase 3) decodes, writes the MP3 clips (libmp3lame is in both the
+  bundled and the winget build) and splices the test samples. Waveform pictures are drawn with Pillow.
+- **Report**: audio issues get ids -3001...; each gets a 6 s mono 64 kbit/s MP3 (fade in/out) and a 640x110
+  waveform PNG with a red line at the moment, in `<file>_<date-time>_clips/` next to the .docx. The Word file
+  links to the clip with a relative hyperlink and embeds the waveform; the column is "Waveform and clip" and the
+  text column "What was said" (the words around the moment). The clips folder name is unique and kept when the
+  report is copied to the shared folder, so the links work there too. Timestamps are mm:ss.mmm.
+- **Memory**: an hour of audio is ~230 MB of float32 samples; the click search runs in 30 s pieces and the
+  spectra in chunks, so peak use stays near that. Analysis takes ~25 s per hour of audio on this laptop
+  (Whisper takes far longer).
+
 ### Phase 1: Simplify and expose settings — done (2026-10-13)
 - Punctuation off and hidden as above; tests updated: the default CLI run never mentions the API; with the check
   switched on and no key it is still skipped with the old warning.
@@ -1056,3 +1106,34 @@ Not built on purpose: ClickUp sync, creative-direction checks, PDF reports.
   fast user switching on one PC (the per-PC lock was tested within one process with a live pid and a dead one),
   low-priority behaviour under a real editing load, the macOS memory/priority helpers (written for macOS, run only
   on Windows here), PyInstaller builds with the bundled ffmpeg on both OSes, and MDM/Intune deployment.
+
+### Phase 4: Audio-edit checks for E2CL (podcasts) — done (2026-10-13)
+- Input: audio files (mp3, wav, m4a, aac, flac, ogg; also opus, wma, aif) in the CLI, the file picker, drops
+  and folders. `src/audio/media.py` (audio-only detection, decoding), `src/audio/features.py` (levels, cepstra,
+  band energies, DTW similarity, lag similarity), `src/audio/edits.py` (the checks), `src/audio/clips.py`
+  (clips, waveforms); engine stages for audio files; report and evaluation support; `clients/E2CL.yaml`.
+- Issue types: stutter, repeated_phrase (incl. retakes), abrupt_cut, jump_cut, dead_air, filler (off by default,
+  counted always).
+- `scripts/make_audio_samples.py`: text-to-speech (Windows SAPI / macOS say) or `--source`, room tone, Whisper
+  word times, ffmpeg filter-graph splicing of one mistake of each kind, MP3, truth JSON, clean control.
+- `scripts/evaluate.py --checks audio`: audio note types (from E2CL and E2CS notes by keyword: 70 stutter, 39
+  repeated phrase, 28 abrupt, 12 dead air, 9 jump), matched within ±1.5 s, recall and precision per type and
+  "all audio". **Not run: none of the 7 E2CS episodes are on this machine.**
+- Tests: `tests/test_audio_edits.py` + `tests/audio_synth.py` (numpy speech-like audio with planted mistakes,
+  the engine with a stand-in transcript, the report's clips, waveforms and links, the shared copy) and a slow
+  test with text-to-speech and the real Whisper.
+- **Results so far (not real podcasts):**
+  - numpy speech-like audio: 18 clean files, 0 false alarms; 6 planted files (each: stutter written once by the
+    "transcript", 2-word repeat, retake, mid-word cut, room tone change and back, 4 s dead air): every stutter,
+    repeat, retake, room change and dead air found with the right type, 0 false alarms; mid-word cuts 5 of 6 in
+    the test (10 of 12 over 12 tuning files).
+  - text-to-speech (SAPI "Zira"), ffmpeg-spliced, MP3, real Whisper base and small: the clean control 0 flags;
+    6 of 7 planted mistakes found (stutter "rate rates", retake, "short answer, short answer", dead air, room tone
+    change and back); **the mid-word cut ("thinks" cut at its loudest point) was missed** with both models. The
+    stutter splice itself is also flagged as an abrupt cut (it is one).
+- **Untested on real audio:** every threshold was tuned on synthetic and TTS speech, which is cleaner and more
+  regular than a real conversation: real stutters are less alike than copied audio (acoustic similarity
+  0.94 needed), real speech has breaths, laughter, crosstalk, music beds and level rides, and real edits are often
+  crossfaded. Expect both misses and false alarms on real E2CL episodes until the evaluation is run on them:
+  put the episodes and data/ground_truth.csv rows (or the drafted E2CS rows) in place and run
+  `python scripts/evaluate.py --checks audio`, then adjust E2CL.yaml (sensitivity first).

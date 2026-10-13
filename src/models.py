@@ -38,9 +38,19 @@ SHOT_MISMATCH = "shot_mismatch"
 COLOR_ISSUES = {OVEREXPOSED, UNDEREXPOSED, CRUSHED_BLACKS, FLAT_CONTRAST, SATURATION, COLOR_CAST, SKIN_TONE,
                 SHOT_MISMATCH}
 
+# Audio edits (podcasts, src/audio/edits.py)
+STUTTER = "stutter"
+REPEATED_PHRASE = "repeated_phrase"
+ABRUPT_CUT = "abrupt_cut"
+JUMP_CUT = "jump_cut"
+DEAD_AIR = "dead_air"
+FILLER = "filler"
+AUDIO_ISSUES = {STUTTER, REPEATED_PHRASE, ABRUPT_CUT, JUMP_CUT, DEAD_AIR, FILLER}
+
 # Issues that aren't about a caption have negative caption ids: -1, -2... for speech with no
-# caption, and -1001, -1002... for shot 1, 2... of the color checks.
+# caption, -1001, -1002... for shot 1, 2... of the color checks, -3001, -3002... for audio issues.
 SHOT_ID_BASE = 1000
+AUDIO_ID_BASE = 3000                 # audio issue n: -3000 - n
 
 
 def shot_issue_id(shot_number: int) -> int:
@@ -49,7 +59,16 @@ def shot_issue_id(shot_number: int) -> int:
 
 def shot_number(caption_id: int) -> int | None:
     """The shot number for a color issue's id, None for any other id."""
-    return -caption_id - SHOT_ID_BASE if caption_id <= -SHOT_ID_BASE else None
+    return -caption_id - SHOT_ID_BASE if -AUDIO_ID_BASE < caption_id <= -SHOT_ID_BASE else None
+
+
+def audio_issue_id(n: int) -> int:
+    return -(AUDIO_ID_BASE + n)
+
+
+def audio_number(caption_id: int) -> int | None:
+    """The number of an audio issue's id, None for any other id."""
+    return -caption_id - AUDIO_ID_BASE if caption_id <= -AUDIO_ID_BASE else None
 
 SEVERITIES = ("high", "medium", "low")
 

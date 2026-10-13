@@ -281,7 +281,7 @@ def test_cli_with_video(monkeypatch, capsys, tmp_path):
 def test_cli_reports_a_missing_video(capsys, tmp_path):
     assert main(["--srt", str(FIXTURES / "sample_mistakes.srt"), "--video", str(tmp_path / "nope.mp4"),
                  "--no-llm"]) == 2
-    assert "video not found" in capsys.readouterr().err.lower()
+    assert "file not found" in capsys.readouterr().err.lower()
 
 
 # --- the one-time model download --------------------------------------------------------------

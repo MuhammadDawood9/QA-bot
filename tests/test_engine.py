@@ -80,7 +80,7 @@ def test_cancel_reaches_the_ocr_loop(tmp_path, monkeypatch):
 
 
 def test_errors_are_readable():
-    with pytest.raises(QCError, match="Video not found"):
+    with pytest.raises(QCError, match="File not found"):
         run_qc(Path("no such video.mp4"), None)
     with pytest.raises(QCError, match="Give a video"):
         run_qc(None, None)

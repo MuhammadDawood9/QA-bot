@@ -129,8 +129,11 @@ def test_template_has_caption_and_color_notes_and_a_video_list(tmp_path):
     notes, problems = evaluate.read_truth(out, fps=30)
     kinds = {n.kind for n in notes}
     assert {"spelling", "punctuation", "too_short"} <= kinds and "color_grading" in kinds and not problems
+    audio = [n for n in notes if n.area == "audio"]
+    assert {"stutter", "repeated_phrase", "abrupt_cut", "dead_air"} <= {n.kind for n in audio}
+    assert {n.client for n in audio} <= {"E2CL", "E2CS"}                       # the podcast clients
     videos = (tmp_path / "ground_truth_videos.csv").read_text(encoding="utf-8-sig").splitlines()
-    assert videos[0].startswith("task_name,client,caption_notes,color_notes,timed_notes")
+    assert videos[0].startswith("task_name,client,caption_notes,color_notes,audio_notes,timed_notes")
     assert len(videos) > 10
     with pytest.raises(SystemExit, match="already exists"):
         evaluate.make_template(xlsx, out)                                      # never overwrites your edits
@@ -182,3 +185,26 @@ def test_hdr_is_detected(tmp_path):
     sdr = make_clip(tmp_path / "sdr.mp4", "-c:v", "libx264", "-pix_fmt", "yuv420p")
     assert hdr_transfer(hlg) == "HLG"
     assert hdr_transfer(sdr) is None
+
+
+def test_audio_notes_are_matched_within_one_and_a_half_seconds():
+    from src.models import Issue
+
+    def flag(kind, at):
+        return evaluate.Flag("ep.mp3", Issue(-3001, at, kind, "medium", "x", "y"), at, at)
+
+    notes = [evaluate.Note("ep.mp3", "0:10", "E2CL", "stutter", "Stutter on word got", 10.0, 10.0),
+             evaluate.Note("ep.mp3", "0:30", "E2CL", "dead_air", "Silence not removed", 30.0, 30.0),
+             evaluate.Note("ep.mp3", "0:50", "E2CL", "audio_edit", "fix the edit", 50.0, 50.0)]
+    flags = [flag("stutter", 11.4), flag("dead_air", 32.0), flag("abrupt_cut", 50.5), flag("jump_cut", 70.0)]
+    evaluate.match(notes, flags, tolerance=2.0, audio_tolerance=1.5)
+    rows = {r["type"]: r for r in evaluate.score(notes, flags, minutes=2.0)}
+    assert rows["stutter"]["recall"] == 1.0 and rows["stutter"]["precision"] == 1.0
+    assert rows["dead_air"]["recall"] == 0.0                                  # 2 s away: outside +-1.5 s
+    assert rows["abrupt_cut"]["precision"] == 1.0                             # matched the generic note
+    assert rows["all audio"]["recall"] == 2 / 3 and rows["all audio"]["flags"] == 4
+    assert evaluate.audio_kind("Stutter & word repeat \"for\"") == "stutter"
+    assert evaluate.audio_kind("Sentence repeat") == "repeated_phrase"
+    assert evaluate.audio_kind("Abrupt pause") == "abrupt_cut"
+    assert evaluate.audio_kind("Silence not removed") == "dead_air"
+    assert evaluate.audio_kind("Change the font") is None

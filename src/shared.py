@@ -511,8 +511,9 @@ def set_editor_pin(floor: Floor, pin: str) -> None:
 
 def copy_report_to_shared(report: Path, reports_root: Path, client: str | None, user: str, video: Path | None,
                           extra_folder: Path | None = None) -> Path:
-    """Copy a Word report to <reports_root>/<client>/<date>_<user>_<video>.docx (and a clips
-    folder next to it, for audio reports). Never overwrites: a number is added instead."""
+    """Copy a Word report to <reports_root>/<client>/<date>_<user>_<video>.docx, and an audio
+    report's clips folder next to it under its own (unique) name, which is what the Word file's
+    links point to. Never overwrites: a number is added instead."""
     import re
 
     def safe(text: str) -> str:
@@ -526,7 +527,7 @@ def copy_report_to_shared(report: Path, reports_root: Path, client: str | None, 
         target, n = folder / f"{stem}-{n}.docx", n + 1
     shutil.copy2(report, target)
     if extra_folder is not None and Path(extra_folder).is_dir():
-        shutil.copytree(extra_folder, target.with_name(target.stem + "_" + Path(extra_folder).name))
+        shutil.copytree(extra_folder, folder / Path(extra_folder).name, dirs_exist_ok=True)
     return target
 
 

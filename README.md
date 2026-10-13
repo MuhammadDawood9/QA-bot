@@ -194,6 +194,35 @@ Every field given must match (`client`, `type`, `text` in the caption, `video`, 
 out matches anything. Shorten `text` to the word that's fine to cover every caption with it. The report's checks
 list says how many flags were hidden, so nothing disappears silently.
 
+## Podcasts: audio-edit checks (client E2CL)
+
+Drop an audio file (mp3, wav, m4a, aac, flac, ogg) on the mascot, or `python -m src.main --video episode.mp3
+--client E2CL`. Picture checks (OCR, on-screen text, color) are skipped; caption checks run only with `--srt`.
+The audio checks (`src/audio/edits.py`):
+
+| Type | What it finds | How |
+|---|---|---|
+| `stutter` | a word said twice ("the the"), a restarted word ("rate rates"), a false start ("I wa- I wanted"), a repeated 150-800 ms sound | Whisper asked to keep disfluencies, plus the sound itself: adjacent stretches compared at every lag |
+| `repeated_phrase` | a 2-3 word phrase said twice; a retake: the same 5+ words again within 30 s | transcript, confirmed by how alike the two takes sound |
+| `abrupt_cut` | clicks, speech that stops dead or drops to digital silence, a word cut off mid-word | sample jumps vs local signal, no-fade offsets, timbre changing at once where two words touch, Whisper's unsure short words |
+| `jump_cut` | room tone or speech level changing at an edit, a sentence with no pause before the next (breath removed) | background level and spectrum before vs after, speech level before vs after |
+| `dead_air` | silence longer than 2.5 s (medium) | 20 ms levels against the room tone |
+| `filler` | um, uh... (off by default; always counted in the report) | transcript |
+
+Every threshold, the legitimate repeats ("very very", "no no") and the sensitivity (low / medium / high, each
+a column of values) are in the client file's `audio:` block (`clients/E2CL.yaml`; defaults in `config.yaml`).
+Audio checks run on audio files for every client unless its file says `audio: {enabled: false}`, and on
+videos only when it says `enabled: true`. *Checks > Audio edits* switches them off for a run.
+
+In the report each audio issue has a small waveform with the moment marked, and a link to a 6-second MP3
+clip in the report's `<file>_<date-time>_clips` folder (keep it next to the .docx). Timestamps are mm:ss.ms.
+
+Test material: `python scripts/make_audio_samples.py` makes a podcast-like file with text-to-speech (or from
+`--source your.mp3`), plants one mistake of each kind with ffmpeg and writes the true times, plus a clean
+control that must give no flags; `python -m pytest --run-slow tests/test_audio_edits.py` runs it through the
+real Whisper. `scripts/evaluate.py --checks audio` scores the checks against QC notes (±1.5 s).
+**Tuned on synthetic and text-to-speech audio only, not yet on real podcast episodes.**
+
 ## On the QC floor (many PCs, one shared folder)
 
 Every PC can share one data folder (a network drive or a synced SharePoint/OneDrive folder) for the

@@ -1,0 +1,99 @@
+# Client rules for E2CL: audio podcasts. The audio-edit checks are what this client is checked for:
+# stutters and repeats, retakes left in, abrupt and jump cuts, dead air (src/audio/edits.py).
+# Every audio threshold is in the "audio:" block below (the same keys as config.yaml's "audio:",
+# which holds the defaults); "sensitivity" picks a column from "levels". Change values here, or
+# from the app: Client > Edit client... > Checks (e.g. "audio.sensitivity = high").
+# These values were tuned on synthetic speech only, not yet on real E2CL episodes: see the plan.
+client: E2CL
+name: Audio podcasts
+language: en
+notes: Audio-only podcasts. Edit QC (stutters, repeats, cuts, dead air); no captions or picture.
+overrides: {}
+audio:
+  enabled: true                  # on for this client's audio files and videos (auto = audio files only; false = never)
+  sensitivity: medium            # low (fewer, surer flags) / medium / high (more flags, more false alarms)
+  checks:                        # which audio checks run
+    stutter: true                # a word or sound said twice in a row, false starts ("I wa- I wanted")
+    repeated_phrase: true        # a 2-3 word phrase said twice in a row
+    repeated_take: true          # the same sentence said again within take_window_sec (a retake left in)
+    abrupt_cut: true             # clicks, speech stopping dead, words cut off mid-word
+    jump_cut: true               # room tone or loudness changing at an edit, a pause cut out
+    dead_air: true               # silence longer than dead_air_sec
+    fillers: false               # flag every um / uh (they're always counted in the report's checks list)
+  sample_rate: 16000             # the audio is analysed at this rate (Hz)
+  # Whisper is asked to write disfluencies down (it tends to tidy them away): a prompt full of
+  # them, and no carrying of the previous sentence's style. It still drops some, which is why
+  # the sound itself is compared too.
+  disfluency_prompt: "Umm, let me think like, hmm... Okay, here's what I'm, like, thinking. I- I wa- I wanted to, uh, say"
+  condition_on_previous_text: false
+  whisper_vad: false             # with the prompt, the voice filter made Whisper drop whole 20 s stretches
+  transcript_gap_sec: 5          # speech this long with no words in the transcript is filled from a plain pass
+  # Repeats that are normal speech, not mistakes (case and punctuation ignored).
+  legit_repeats: ["very very", "no no", "yeah yeah", "yes yes", "bye bye", "so so", "that that", "had had",
+                  "really really", "ha ha", "haha haha", "knock knock", "go go", "well well", "now now",
+                  "okay okay", "ok ok", "right right", "hey hey", "is is", "blah blah", "more more", "again and again"]
+  fillers: ["um", "umm", "uh", "uhh", "ah", "ahh", "er", "erm", "hmm", "mm", "mhm"]
+  max_repeat_gap_sec: 1.0        # the two words of a repeat are at most this far apart
+  max_phrase_words: 3            # longest phrase checked for an immediate repeat
+  restart_max_prob: 0.8          # "rate rates" is a stutter only if Whisper was less sure than this of "rate"
+  take_min_words: 5              # a retake is at least this many words said again...
+  take_window_sec: 30            # ...within this many seconds
+  acoustic_unit_ms: [150, 800]   # length of the repeated sound looked for (shortest, longest)
+  acoustic_margin: 0.2           # a repeat must be this much less alike at half its length (not a held vowel)
+  acoustic_min_speech: 0.6       # share of the stretch that must be speech (a stutter has a pause inside)
+  acoustic_max_level_diff_db: 6  # the two copies' loudness may differ by at most this
+  acoustic_onset_db: 6           # each copy must start with a sound starting (a rise of this many dB)
+  speech_above_floor_db: 15      # a frame this far above the local noise floor is speech
+  speech_min_db: -50             # ...and at least this loud (dBFS)
+  digital_silence_db: -85        # quieter than this is digital silence (not room tone)
+  min_fade_ms: 30                # natural speech fades out over longer than this
+  abrupt_drop_db: 30             # speech dropping this much within ~20 ms has no fade
+  click_min_jump: 0.05           # a click: one sample jumps at least this much (full scale = 1)...
+  room_tone_window_sec: 3.0      # background compared over this long before / after a point
+  room_tone_shape_db: 5          # background spectrum shape change counted as a different room
+  min_room_tone_sec: 0.4         # pauses needed on each side to judge the room tone (dips inside speech aren't)
+  loudness_window_sec: 2.5       # speech level compared over this long before / after a point
+  cut_word_max_sec: 0.3          # a word this short...
+  cut_word_max_prob: 0.5         # ...that Whisper is this unsure of, still loud at its end, is cut off
+  jump_max_similarity: 0.35      # where two words touch, timbre this unlike across 20 ms is a splice
+  min_sentence_gap_sec: 0.08     # a sentence boundary with less pause than this lost its breath
+  pause_min_sec: 0.15            # pauses at least this long are checked for background / loudness changes
+  cut_merge_sec: 0.3             # evidence this close together is one cut
+  # How much each kind of evidence counts toward a cut's score (0-1); scores combine like
+  # independent chances: 1 - (1 - a)(1 - b)...
+  weight_click: 0.6
+  weight_edge: 0.7
+  weight_cut_word: 0.5
+  weight_spectral_jump: 0.4
+  weight_short_gap: 0.35
+  weight_room_tone: 0.75
+  weight_loudness: 0.6
+  min_confidence: 0.0            # drop audio flags less sure than this
+  # The values the sensitivity chooses between.
+  levels:
+    low:
+      acoustic_similarity: 0.97  # how alike two stretches must sound to be a repeated sound (0-1)
+      take_acoustic_similarity: 0.85
+      click_ratio: 12            # a click jumps this many times more than the signal around it
+      room_tone_db: 8            # background level change counted as a different room
+      loudness_jump_db: 8        # speech level change at an edit
+      cut_score: 0.8             # combined evidence needed to flag a cut
+      dead_air_sec: 3.5          # silence longer than this is dead air
+    medium:
+      acoustic_similarity: 0.94
+      take_acoustic_similarity: 0.75
+      click_ratio: 9
+      room_tone_db: 6
+      loudness_jump_db: 6
+      cut_score: 0.65
+      dead_air_sec: 2.5
+    high:
+      acoustic_similarity: 0.9
+      take_acoustic_similarity: 0.65
+      click_ratio: 7
+      room_tone_db: 4.5
+      loudness_jump_db: 4.5
+      cut_score: 0.5
+      dead_air_sec: 1.8
+  silence_noise_db: -60          # quieter than this (20 ms level, dBFS) is always silence...
+  silence_above_floor_db: 8      # ...and so is anything less than this above the local room tone

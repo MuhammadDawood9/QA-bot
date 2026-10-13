@@ -1,9 +1,10 @@
-"""Measure how well the bot's checks (captions and color) match your own QC notes.
+"""Measure how well the bot's checks (captions, color and audio edits) match your own QC notes.
 
     python scripts/evaluate.py --make-template          # draft data/ground_truth.csv from the QC spreadsheet
     python scripts/evaluate.py                          # evaluate (videos looked up in data/samples/)
     python scripts/evaluate.py --videos "D:/QC videos" --tolerance 2
-    python scripts/evaluate.py --checks captions        # only the caption checks (or: color)
+    python scripts/evaluate.py --checks captions        # only the caption checks (or: color, audio)
+    python scripts/evaluate.py --checks audio --audio-tolerance 1.5      # podcasts (E2CL)
 
 data/ground_truth.csv columns: video, timestamp, client, issue_type, note_text
   video       the video's file name (looked up under --videos, recursively) or a full path
@@ -16,6 +17,9 @@ data/ground_truth.csv columns: video, timestamp, client, issue_type, note_text
               doesn't say which.
               color: overexposed, underexposed, crushed_blacks, flat_contrast, saturation,
               color_cast, skin_tone, shot_mismatch, or color_grading when the note doesn't say which.
+              audio (podcasts): stutter, repeated_phrase, abrupt_cut, jump_cut, dead_air, or
+              audio_edit when the note doesn't say which. Matched within --audio-tolerance (1.5 s)
+              of the flagged moment.
               The bot's own type names (capitalization, wrong_word, caption_late...) work too.
               A video with no notes at all can be listed with an empty timestamp and issue_type
               "none": it then only counts toward false alarms.
@@ -55,9 +59,10 @@ if str(ROOT) not in sys.path:
 
 from src.config import color_settings, load_client, load_config, normalize_client_code, ocr_settings, resolve_path  # noqa: E402
 from src.inputs.video_ocr import FULL_FRAME, parse_region  # noqa: E402
-from src.models import (CAPITALIZATION, CAPTION_EARLY, CAPTION_LATE, CAPTION_SYNC, COLOR_ISSUES, EXTRA_WORD,  # noqa: E402
-                        MISSING_WORD, PHRASE_BREAK, PUNCTUATION, REPEATED_WORD, SCREEN_TEXT_MISMATCH, SPACING,
-                        SPELLING, TOO_SHORT, UNCAPTIONED_SPEECH, WRONG_WORD, Issue, shot_number)
+from src.models import (AUDIO_ISSUES, CAPITALIZATION, CAPTION_EARLY, CAPTION_LATE, CAPTION_SYNC,  # noqa: E402
+                        COLOR_ISSUES, EXTRA_WORD, FILLER, MISSING_WORD, PHRASE_BREAK, PUNCTUATION, REPEATED_WORD,
+                        SCREEN_TEXT_MISMATCH, SPACING, SPELLING, TOO_SHORT, UNCAPTIONED_SPEECH, WRONG_WORD, Issue,
+                        shot_number)
 from src.utils.timecode import TimecodeError, format_timestamp, infer_fps, parse_range  # noqa: E402
 
 GENERIC = {"color_grading", "color", "colour", "colour_grading", ""}
@@ -74,6 +79,12 @@ ALL_CAPTIONS = "all captions"
 ALIASES = {"too_short_caption": "too_short", "capitals": "punctuation", "capital": "punctuation",
            "sync": "timing", "captions": "caption", "subtitle": "caption", "subtitles": "caption"}
 UNUSED_SPAN = 2.0          # seconds a flag with no caption (speech without one) covers after its time
+AUDIO_TYPES = sorted(AUDIO_ISSUES - {FILLER})
+AUDIO_GENERIC = "audio_edit"
+ALL_AUDIO = "all audio"
+AUDIO_ALIASES = {"stutter": "stutter", "repeat": "repeated_phrase", "repeated_word": "repeated_phrase",
+                 "retake": "repeated_phrase", "abrupt": "abrupt_cut", "cut": "abrupt_cut", "jump": "jump_cut",
+                 "silence": "dead_air", "pause": "dead_air", "audio": AUDIO_GENERIC}
 
 
 def family(kind: str) -> str:
@@ -82,13 +93,15 @@ def family(kind: str) -> str:
 
 
 def area(kind: str) -> str:
+    if kind in AUDIO_ISSUES or kind == AUDIO_GENERIC:
+        return "audio"
     return "caption" if kind in CAPTION_FAMILIES or kind == CAPTION_GENERIC else "color"
 
 
 def generic(area_name: str) -> str:
-    return CAPTION_GENERIC if area_name == "caption" else "color_grading"
+    return {"caption": CAPTION_GENERIC, "audio": AUDIO_GENERIC}.get(area_name, "color_grading")
 COLUMNS = ["video", "timestamp", "client", "issue_type", "note_text"]
-VIDEO_EXTENSIONS = {".mp4", ".mov", ".mxf", ".m4v", ".mkv", ".avi"}
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".mxf", ".m4v", ".mkv", ".avi", ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
 
 
 @dataclass
@@ -139,8 +152,10 @@ def read_truth(path: Path, fps: float) -> tuple[list[Note], list[str]]:
                 problems.append(f"line {n}: no video, skipped")
                 continue
             kind = (row.get("issue_type") or "").strip().lower()
+            kind = AUDIO_ALIASES.get(kind, kind) if kind not in AUDIO_ISSUES else kind
             kind = "color_grading" if kind in GENERIC else family(ALIASES.get(kind, kind))
-            if kind not in COLOR_ISSUES | set(CAPTION_FAMILIES) | {"color_grading", CAPTION_GENERIC, "none"}:
+            if kind not in (COLOR_ISSUES | set(CAPTION_FAMILIES) | AUDIO_ISSUES
+                            | {"color_grading", CAPTION_GENERIC, AUDIO_GENERIC, "none"}):
                 problems.append(f"line {n}: issue_type {kind!r} isn't a type the bot checks; counted as color_grading")
                 kind = "color_grading"
             note = Note(video, (row.get("timestamp") or "").strip(), normalize_client_code(row.get("client")) or "",
@@ -222,11 +237,32 @@ def caption_flags(video: Path, client_code: str, config: dict) -> tuple[list[Fla
     return flags, length, took
 
 
+def audio_flags(path: Path, client_code: str, config: dict) -> tuple[list[Flag], float, float]:
+    """The audio-edit issues for one podcast (or video), each a moment."""
+    from src.engine import QCError, QCOptions, audio_settings, run_qc
+    from src.config import load_client
+
+    started = time.monotonic()
+    client = load_client(config, client_code or None)
+    if not audio_settings(config, client, audio_only=True).get("enabled"):
+        print(f"  {path.name}: the audio checks are off for client {client_code or 'default'}")
+    try:
+        result = run_qc(path, client_code or None, options=QCOptions(use_llm=False, check_color=False), config=config)
+    except QCError as exc:
+        print(f"  {path.name}: audio not checked: {exc}")
+        return [], 0.0, 0.0
+    took = time.monotonic() - started
+    length = float((result.context.stats.get("audio") or {}).get("duration", 0.0))
+    flags = [Flag(path.name, i, i.timestamp, i.timestamp) for i in result.issues if i.type in AUDIO_ISSUES - {FILLER}]
+    return flags, length, took
+
+
 # --- matching and scoring -------------------------------------------------------------------
 
-def match(notes: list[Note], flags: list[Flag], tolerance: float) -> None:
+def match(notes: list[Note], flags: list[Flag], tolerance: float, audio_tolerance: float | None = None) -> None:
     for flag in flags:
-        lo, hi = flag.start - tolerance, flag.end + tolerance
+        tol = audio_tolerance if audio_tolerance is not None and flag.area == "audio" else tolerance
+        lo, hi = flag.start - tol, flag.end + tol
         for note in notes:
             if note.start is None or note.kind == "none" or note.area != flag.area:
                 continue
@@ -239,7 +275,7 @@ def score(notes: list[Note], flags: list[Flag], minutes: float) -> list[dict]:
     rows = []
     timed = [n for n in notes if n.start is not None and n.kind != "none"]
     for name, kinds, everything in (("caption", list(CAPTION_FAMILIES), ALL_CAPTIONS),
-                                    ("color", sorted(COLOR_ISSUES), ALL)):
+                                    ("color", sorted(COLOR_ISSUES), ALL), ("audio", AUDIO_TYPES, ALL_AUDIO)):
         area_notes = [n for n in timed if n.area == name]
         area_flags = [f for f in flags if f.area == name]
         for kind in kinds + [everything]:
@@ -269,7 +305,7 @@ def pct(x) -> str:
 # --- output ---------------------------------------------------------------------------------
 
 def write_outputs(folder: Path, rows: list[dict], notes: list[Note], flags: list[Flag], videos: dict,
-                  problems: list[str], tolerance: float) -> Path:
+                  problems: list[str], tolerance: float, audio_tolerance: float = 1.5) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     misses = [n for n in notes if n.start is not None and n.kind != "none" and not n.matched_by]
     false_alarms = [f for f in flags if not f.matches]
@@ -290,7 +326,8 @@ def write_outputs(folder: Path, rows: list[dict], notes: list[Note], flags: list
     total_min = sum(v["minutes"] for v in videos.values())
     lines = [f"# Check evaluation, {dt.datetime.now():%Y-%m-%d %H:%M}", "",
              f"{len(videos)} video(s), {total_min:.1f} minutes; {sum(1 for n in notes if n.start is not None)} timed "
-             f"note(s), {len(untimed)} untimed; matching tolerance ±{tolerance:g} s around each flagged caption or shot.",
+             f"note(s), {len(untimed)} untimed; matching tolerance ±{tolerance:g} s around each flagged caption or shot, "
+             f"±{audio_tolerance:g} s around each audio flag.",
              "", "Caption flags come from every caption check except the paid punctuation one (no API calls).", "",
              "| Check | Notes | Found | Recall | Flags | True | Precision | False alarms / min |",
              "|---|---:|---:|---:|---:|---:|---:|---:|"]
@@ -341,6 +378,24 @@ KEYWORDS = [
 ]
 
 
+# Audio-edit notes ("Stutter on word got", "Word repeat", "Abrupt cut", "Silence not removed") ->
+# the bot's audio issue types; the first pattern that matches wins.
+AUDIO_KEYWORDS = [
+    ("stutter", r"stutter|false start"),
+    ("repeated_phrase", r"repeat|twice|retake|said again"),
+    ("abrupt_cut", r"abrupt|cut off|cutoff|chopped|click|\bpop\b|weird sound|glitch"),
+    ("jump_cut", r"jump|room tone|background|tone change|breath|volume|level"),
+    ("dead_air", r"silence|dead air|pause|gap"),
+]
+# Podcast clients whose audio-edit notes go into the template. E2CL is the audio podcast client;
+# the spreadsheet's podcast notes so far are under E2CS (Market podcast episodes).
+AUDIO_CLIENTS = ("E2CL", "E2CS")
+
+
+def audio_kind(text: str) -> str | None:
+    return next((k for k, pattern in AUDIO_KEYWORDS if re.search(pattern, text, re.I)), None)
+
+
 # The spreadsheet's caption categories -> ground truth types. creative_direction and other are
 # requests the bot can't check (new text, animations), so they're left out.
 CAPTION_CATEGORIES = {"spelling": "spelling", "punctuation": "punctuation", "too_short_caption": "too_short"}
@@ -355,9 +410,11 @@ def _sheet(book, prefix: str) -> tuple[dict, list]:
     return {h: i for i, h in enumerate(header)}, rows[1:]
 
 
-def template_rows(xlsx: Path) -> tuple[list[list], int]:
-    """Ground truth rows from the spreadsheet (caption mistakes, then color notes), with the task
-    name where the video goes; and how many caption notes were left out as not checkable."""
+def template_rows(xlsx: Path, audio_clients=AUDIO_CLIENTS) -> tuple[list[list], int]:
+    """Ground truth rows from the spreadsheet (caption mistakes, color notes, then the podcast
+    clients' audio-edit notes), with the task name where the video goes; and how many caption
+    notes were left out as not checkable."""
+    from src.config import normalize_client_code
     import openpyxl
 
     book = openpyxl.load_workbook(xlsx, read_only=True)
@@ -382,6 +439,18 @@ def template_rows(xlsx: Path) -> tuple[list[list], int]:
         kind = next((k for k, pattern in KEYWORDS if re.search(pattern, text, re.I)), "color_grading")
         out.append([r[col["task_name"]], str(r[col["video_timestamp"]] or "").strip(), r[col["client"]] or "",
                     kind, text])
+    wanted = {normalize_client_code(c) for c in audio_clients}
+    for r in rows:
+        client = normalize_client_code(str(r[col["client"]] or "")) or ""
+        if not client:
+            m = re.search(r"#\s*([A-Za-z0-9_]+)", str(r[col["task_name"]] or ""))
+            client = normalize_client_code(m.group(1)) if m else ""
+        if client not in wanted or r[col["category"]] == "color_grading":
+            continue
+        text = str(r[col["comment_text"]] or "").strip()
+        kind = audio_kind(text)
+        if kind:
+            out.append([r[col["task_name"]], str(r[col["video_timestamp"]] or "").strip(), client, kind, text])
     return out, skipped
 
 
@@ -400,18 +469,20 @@ def make_template(xlsx: Path, out: Path) -> int:
     # Which videos to collect, the ones with the most checkable notes first.
     tasks: dict[str, dict] = {}
     for task, stamp, client, kind, _ in rows:
-        t = tasks.setdefault(task, {"client": client, "caption": 0, "color": 0, "timed": 0})
+        t = tasks.setdefault(task, {"client": client, "caption": 0, "color": 0, "audio": 0, "timed": 0})
         t[area(kind)] += 1
         t["timed"] += bool(stamp)
     needed = out.with_name(out.stem + "_videos.csv")
     with needed.open("w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["task_name", "client", "caption_notes", "color_notes", "timed_notes", "video_file"])
+        w.writerow(["task_name", "client", "caption_notes", "color_notes", "audio_notes", "timed_notes", "video_file"])
         for task, t in sorted(tasks.items(), key=lambda kv: (-kv[1]["timed"], kv[0])):
-            w.writerow([task, t["client"], t["caption"], t["color"], t["timed"], ""])
+            w.writerow([task, t["client"], t["caption"], t["color"], t["audio"], t["timed"], ""])
     captions = sum(1 for r in rows if area(r[3]) == "caption")
+    audio = sum(1 for r in rows if area(r[3]) == "audio")
     print(f"wrote {out}: {captions} caption notes ({skipped} creative or other requests left out: the bot can't "
-          f"check them) and {len(rows) - captions} color notes, from {len(tasks)} videos.")
+          f"check them), {len(rows) - captions - audio} color notes and {audio} audio-edit notes "
+          f"(clients {', '.join(AUDIO_CLIENTS)}), from {len(tasks)} videos.")
     print(f"wrote {needed}: the videos to collect, most useful first.")
     print("Replace each 'TODO <task name>' with the video's file name, check the guessed issue_type, and "
           "delete rows for videos you don't have.")
@@ -428,8 +499,9 @@ def main(argv=None) -> int:
     parser.add_argument("--videos", type=Path, action="append",
                         help="folder to look for the videos in (repeatable; default data/samples and data)")
     parser.add_argument("--tolerance", type=float, default=2.0, help="seconds either side of a flagged shot")
-    parser.add_argument("--checks", choices=("all", "captions", "color"), default="all",
-                        help="which checks to evaluate (captions run speech recognition: slower)")
+    parser.add_argument("--checks", choices=("all", "captions", "color", "audio"), default="all",
+                        help="which checks to evaluate (captions and audio run speech recognition: slower)")
+    parser.add_argument("--audio-tolerance", type=float, default=1.5, help="seconds either side of an audio flag")
     parser.add_argument("--make-template", action="store_true",
                         help="write a draft ground_truth.csv (and the list of videos to collect) from the QC "
                              "spreadsheet")
@@ -443,7 +515,8 @@ def main(argv=None) -> int:
 
     config = load_config()
     notes, problems = read_truth(args.truth, float(config.get("timecode", {}).get("fps", 30)))
-    wanted = {"all": {"caption", "color"}, "captions": {"caption"}, "color": {"color"}}[args.checks]
+    wanted = {"all": {"caption", "color", "audio"}, "captions": {"caption"}, "color": {"color"},
+              "audio": {"audio"}}[args.checks]
     for n in notes:
         if n.kind != "none" and n.area not in wanted:
             n.kind = "none"                                         # not part of this run
@@ -465,12 +538,14 @@ def main(argv=None) -> int:
         areas = {n.area for n in video_notes if n.kind != "none"} or set(wanted)      # no notes: both count
         print(f"checking {path.name} (client {client or 'default'}; {', '.join(sorted(areas))})...")
         flags, length, took = [], 0.0, 0.0
-        for name, check in (("caption", caption_flags), ("color", color_flags)):
+        if path.suffix.lower() in {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}:
+            areas &= {"audio", "caption"}                                       # no picture in an audio file
+        for name, check in (("caption", caption_flags), ("color", color_flags), ("audio", audio_flags)):
             if name in areas & wanted:
                 found, seconds, spent = check(path, client, config)
                 flags += found
                 length, took = max(length, seconds), took + spent
-        match(video_notes, flags, args.tolerance)
+        match(video_notes, flags, args.tolerance, args.audio_tolerance)
         all_flags += flags
         videos[name] = {"minutes": length / 60, "flags": len(flags), "notes": len(video_notes), "took": took}
 
@@ -479,7 +554,7 @@ def main(argv=None) -> int:
     rows = score(evaluated, all_flags, minutes)
     folder = Path(config["_root"]) / config.get("report", {}).get("output_dir", "reports") / \
         f"evaluation_{dt.datetime.now():%Y%m%d-%H%M%S}"
-    report = write_outputs(folder, rows, evaluated, all_flags, videos, problems, args.tolerance)
+    report = write_outputs(folder, rows, evaluated, all_flags, videos, problems, args.tolerance, args.audio_tolerance)
 
     print()
     print(f"{'check':<16}{'notes':>6}{'found':>6}{'recall':>8}{'flags':>7}{'true':>6}{'precision':>11}{'FP/min':>8}")

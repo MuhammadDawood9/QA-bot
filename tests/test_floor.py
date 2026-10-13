@@ -273,13 +273,13 @@ def test_update_check(tmp_path):
 def test_report_copied_to_the_shared_folder_by_client_date_user(tmp_path):
     report = tmp_path / "clip_QC.docx"
     report.write_bytes(b"docx")
-    clips = tmp_path / "clips"
+    clips = tmp_path / "ep 12_20261013-101500_clips"
     clips.mkdir()
     (clips / "a.mp3").write_bytes(b"x")
     first = copy_report_to_shared(report, tmp_path / "reports", "E2CL", "sara", Path("ep 12: final?.mp3"), clips)
     second = copy_report_to_shared(report, tmp_path / "reports", "E2CL", "sara", Path("ep 12: final?.mp3"))
     assert first.parent == tmp_path / "reports" / "E2CL" and first.name.endswith("_sara_ep 12_ final.docx")
-    assert second.name.endswith("-2.docx") and (first.parent / (first.stem + "_clips") / "a.mp3").is_file()
+    assert second.name.endswith("-2.docx") and (first.parent / clips.name / "a.mp3").is_file()   # the name links use
 
 
 def test_reports_carry_app_and_client_rules_versions(tmp_path):

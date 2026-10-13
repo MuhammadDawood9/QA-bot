@@ -28,16 +28,18 @@ log = logging.getLogger("qcbot.transcribe")
 Transcriber = Callable[[Path, dict, str], list[SpokenWord]]
 
 
-def build_initial_prompt(terms: Sequence[str], max_chars: int = 600) -> str:
+def build_initial_prompt(terms: Sequence[str], max_chars: int = 600, prefix: str = "") -> str:
     """Whisper reads the prompt as text that came "before" the audio; listing names there makes it
-    more likely to spell them the same way. Whisper only uses the last ~224 tokens of a prompt."""
+    more likely to spell them the same way. Whisper only uses the last ~224 tokens of a prompt.
+    prefix: text put first, e.g. disfluencies ("Umm, I- I wa- I wanted") so it writes them down too."""
+    prefix = (prefix or "").strip()
     if not terms:
-        return ""
+        return prefix
     prompt = "Glossary: " + ", ".join(terms) + "."
     if len(prompt) > max_chars:
         cut = prompt[:max_chars].rsplit(",", 1)[0]
         prompt = cut + "."
-    return prompt
+    return f"{prefix} {prompt}" if prefix else prompt
 
 
 def whisper_settings(machine: dict, settings: dict) -> dict:
@@ -50,6 +52,9 @@ def whisper_settings(machine: dict, settings: dict) -> dict:
         "language": settings.get("language", "en"),
         "beam_size": int(settings.get("beam_size", 1)),
         "vad_filter": bool(settings.get("vad_filter", True)),
+        # Only in the dict when a check asks for it, so existing transcripts keep their cache key.
+        **({"condition_on_previous_text": bool(settings["condition_on_previous_text"])}
+           if "condition_on_previous_text" in settings else {}),
     }
 
 
@@ -133,6 +138,7 @@ def faster_whisper_transcriber(models_dir: Path | Sequence[Path] | None = None,
         segments, info = model.transcribe(
             read_wav(wav), language=ws["language"], beam_size=ws["beam_size"], word_timestamps=True,
             vad_filter=ws["vad_filter"], initial_prompt=prompt or None,
+            condition_on_previous_text=ws.get("condition_on_previous_text", True),
         )
         words: list[SpokenWord] = []
         duration = info.duration or 0.0
@@ -173,7 +179,8 @@ def get_transcript(video: Path, machine: dict, settings: dict, glossary_terms: S
     if not video.is_file():
         raise FileNotFoundError(f"video not found: {video}")
     ws = whisper_settings(machine, settings)
-    prompt = build_initial_prompt(glossary_terms, settings.get("initial_prompt_max_chars", 600))
+    prompt = build_initial_prompt(glossary_terms, settings.get("initial_prompt_max_chars", 600),
+                                  settings.get("initial_prompt_prefix", ""))
 
     digest = file_sha256(video)
     settings_key = text_hash(json.dumps({k: v for k, v in ws.items() if k != "cpu_threads"}, sort_keys=True),

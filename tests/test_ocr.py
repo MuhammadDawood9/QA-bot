@@ -292,7 +292,7 @@ def test_cli_needs_a_video_or_an_srt(capsys):
 
 def test_cli_reports_an_unreadable_video(tmp_path, capsys):
     assert cli.main(["--video", str(tmp_path / "missing.mp4"), "--no-llm"]) == 2
-    assert "video not found" in capsys.readouterr().err.lower()
+    assert "file not found" in capsys.readouterr().err.lower()
 
 
 # --- the real OCR on the test videos ---------------------------------------------------------

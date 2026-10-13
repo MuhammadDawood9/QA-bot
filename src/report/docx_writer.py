@@ -19,6 +19,7 @@ from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.shared import Cm, Pt, RGBColor
 
 from src.ignore import glossary_line, rule_line
@@ -76,6 +77,29 @@ def page_number_field(paragraph) -> None:
     run.append(t)
     field.append(run)
     paragraph._p.append(field)
+
+
+def hyperlink(paragraph, target: str, text: str) -> None:
+    """A link in the paragraph. A relative target (clips/x.mp3) opens next to the Word file."""
+    from urllib.parse import quote
+
+    r_id = paragraph.part.relate_to(quote(target, safe="/:._-"), RT.HYPERLINK, is_external=True)
+    link = OxmlElement("w:hyperlink")
+    link.set(qn("r:id"), r_id)
+    run = OxmlElement("w:r")
+    props = OxmlElement("w:rPr")
+    color = OxmlElement("w:color")
+    color.set(qn("w:val"), "0563C1")
+    underline = OxmlElement("w:u")
+    underline.set(qn("w:val"), "single")
+    props.append(color)
+    props.append(underline)
+    run.append(props)
+    t = OxmlElement("w:t")
+    t.text = text
+    run.append(t)
+    link.append(run)
+    paragraph._p.append(link)
 
 
 # --- tables ---------------------------------------------------------------------------
@@ -150,6 +174,21 @@ def picture(path: Path):
     return fill
 
 
+def audio_cell(folder: Path, mp3: str | None, png: str | None):
+    """A cell filler: the waveform picture, and under it a link to play the clip."""
+    def fill(paragraph):
+        if png:
+            paragraph.add_run().add_picture(str(folder / png), width=Cm(SHOT_WIDTH_CM))
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        if mp3:
+            if png:
+                paragraph.add_run().add_break()
+            hyperlink(paragraph, mp3, "\u25B6 Play the clip (6 s)")
+        if not png and not mp3:
+            paragraph.add_run("(no clip)")
+    return fill
+
+
 def problem(issue):
     """A cell filler: the issue type and severity (colored), then the explanation."""
     def fill(paragraph):
@@ -193,6 +232,11 @@ def write_docx(data: ReportData) -> Path:
     facts = [
         ("Video", info.video.name if info.video else "none (caption text checks only)"),
         ("Captions", f"{captions_source(info)}, {len(data.captions)} captions"),
+    ] if not info.audio_only else [
+        ("Audio", info.video.name),
+        ("Captions", f"{info.srt.name}, {len(data.captions)} captions" if info.srt else "none"),
+    ]
+    facts += [
         ("Client", info.client or "default rules"),
         ("Generated", f"{info.generated:%Y-%m-%d %H:%M}"),
         ("Rules version", info.rules_version or "unknown"),
@@ -219,7 +263,10 @@ def write_docx(data: ReportData) -> Path:
     n = len(data.issues)
     on_captions = sum(1 for cid in data.flagged if cid > 0)
     p = doc.add_paragraph()
-    p.add_run(f"{n} issue{'s' if n != 1 else ''}; {on_captions} of {len(data.captions)} captions flagged.").bold = True
+    if info.audio_only and not data.captions:
+        p.add_run(f"{n} issue{'s' if n != 1 else ''}.").bold = True
+    else:
+        p.add_run(f"{n} issue{'s' if n != 1 else ''}; {on_captions} of {len(data.captions)} captions flagged.").bold = True
     if not data.issues:
         doc.add_paragraph("No issues found.")
     else:
@@ -241,14 +288,18 @@ def write_docx(data: ReportData) -> Path:
         fixed = 2.0 + SHOT_WIDTH_CM + 0.4 + CONFIDENCE_CM
         text_cols = content_cm - fixed
         widths = [2.0, SHOT_WIDTH_CM + 0.4, text_cols * 0.26, text_cols * 0.42, text_cols * 0.32, CONFIDENCE_CM]
-        t = table(doc, ["Time", "Screenshot", "Original text", "What's wrong", "Suggested fix", "Confidence"],
-                  widths, right_align={5})
+        picture_header = ("Waveform and clip" if info.audio_only else
+                          "Screenshot or clip" if data.has_audio else "Screenshot")
+        t = table(doc, ["Time", picture_header, "Original text" if not info.audio_only else "What was said",
+                        "What's wrong", "Suggested fix", "Confidence"], widths, right_align={5})
         for issue in data.issues:
             shot = data.shots.get(issue.caption_id)
-            if shot is not None:
+            if issue.caption_id in data.clips:
+                screenshot = audio_cell(data.folder, *data.clips[issue.caption_id])
+            elif shot is not None:
                 screenshot = picture(data.folder / shot[0])
             else:
-                screenshot = "(no frame)" if data.wanted_shots else "(no video)"
+                screenshot = ("(no clip)" if info.audio_only else "(no frame)") if data.wanted_shots else "(no video)"
             add_row(t, [format_timestamp(issue.timestamp), screenshot, issue.original, problem(issue),
                         issue.suggestion, f"{issue.confidence:.2f}"])
 
