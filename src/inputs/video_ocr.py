@@ -314,14 +314,20 @@ class CaptionReader:
         self.threshold = float(settings.get("change_threshold", 6.0))
         self.readings_by_frame: list[tuple[float, list[Reading]]] = []
         self._last_thumb, self._last_readings, self.ocr_runs = None, [], 0
+        # The whole frame's text boxes (fractions of the frame) when the OCR read this very frame in
+        # full-frame mode, else None: the on-screen text pass can use them instead of reading it again.
+        self.whole_frame_boxes: list[TextBox] | None = None
 
     def feed(self, t: float, image) -> None:
         part = crop(image, self.region)
         thumb = thumbnail(part)
+        self.whole_frame_boxes = None
         if changed(thumb, self._last_thumb, self.threshold):
             boxes = to_frame_boxes(self.engine(part), self.region, part.shape[1], part.shape[0])
             self._last_readings, self._last_thumb = self.keep(boxes), thumb
             self.ocr_runs += 1
+            if self.region == FULL_FRAME:
+                self.whole_frame_boxes = boxes
         self.readings_by_frame.append((t, self._last_readings))
 
     def captions(self) -> list[Caption]:
@@ -400,9 +406,13 @@ class ScreenTextReader:
         self.engine = engine
         self.seen: dict[str, str] = {}          # each normalized reading once, in order of first appearance
 
-    def feed(self, t: float, image) -> None:
-        h, w = image.shape[:2]
-        boxes = [TextBox(b.text, b.score, b.left / w, b.top / h, b.right / w, b.bottom / h) for b in self.engine(image)]
+    def feed(self, t: float, image, boxes: Sequence[TextBox] | None = None) -> None:
+        """boxes: this frame's text already read by the caption pass (fractions of the frame), so
+        the OCR doesn't read the same frame twice."""
+        if boxes is None:
+            h, w = image.shape[:2]
+            boxes = [TextBox(b.text, b.score, b.left / w, b.top / h, b.right / w, b.bottom / h)
+                     for b in self.engine(image)]
         if self.caption_region is not None:
             boxes = [b for b in boxes if not _inside(b, self.caption_region)]
         for r in self.keep(boxes):

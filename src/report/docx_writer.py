@@ -31,6 +31,7 @@ MARGIN_CM = 1.5
 SEVERITY_COLORS = {"high": "C00000", "medium": "C55A11", "low": "7F7F7F"}
 HEADER_FILL = "D9E2F3"       # light blue header rows
 FLAGGED_FILL = "FFF2CC"      # light yellow for flagged captions in the appendix
+CONFIDENCE_CM = 2.6          # wide enough for the word "Confidence" on one line (2.0 wrapped it)
 SHOT_WIDTH_CM = 4.2          # screenshot width in the table (landscape frames)
 SHOT_HEIGHT_CM = 5.0         # screenshot height for vertical (9:16) frames
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
@@ -233,9 +234,9 @@ def write_docx(data: ReportData) -> Path:
     # The issues, in time order
     if data.issues:
         doc.add_heading("Issues", level=1)
-        fixed = 2.0 + SHOT_WIDTH_CM + 0.4 + 2.0
+        fixed = 2.0 + SHOT_WIDTH_CM + 0.4 + CONFIDENCE_CM
         text_cols = content_cm - fixed
-        widths = [2.0, SHOT_WIDTH_CM + 0.4, text_cols * 0.26, text_cols * 0.42, text_cols * 0.32, 2.0]
+        widths = [2.0, SHOT_WIDTH_CM + 0.4, text_cols * 0.26, text_cols * 0.42, text_cols * 0.32, CONFIDENCE_CM]
         t = table(doc, ["Time", "Screenshot", "Original text", "What's wrong", "Suggested fix", "Confidence"],
                   widths, right_align={5})
         for issue in data.issues:

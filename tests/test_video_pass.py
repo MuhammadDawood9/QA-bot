@@ -83,6 +83,20 @@ def test_one_pass_gives_the_same_results_and_fills_the_caches(video, tmp_path):
     assert again == [] and no_ocr.calls == 0                                                # nothing decoded
 
 
+def test_full_frame_mode_reads_each_frame_once(video, tmp_path):
+    """With no caption region, the caption pass already reads the whole frame: the on-screen text
+    pass reuses that reading on the frames both use, with the same result."""
+    alone_engine = FakeOcr()
+    read_burned_in_captions(video, OCR, tmp_path / "a", alone_engine)
+    caps = read_burned_in_captions(video, OCR, tmp_path / "a", alone_engine)
+    screen = read_screen_text(video, OCR, caps, tmp_path / "a", alone_engine)
+    shared_engine = FakeOcr()
+    read_video_once(video, ocr=OCR, ocr_cache=tmp_path / "b", read_captions=True, read_screen=True,
+                    engine=shared_engine)
+    assert read_screen_text(video, OCR, caps, tmp_path / "b", FakeOcr()) == screen
+    assert shared_engine.calls < alone_engine.calls
+
+
 def test_only_what_is_asked_for(video, tmp_path):
     ran = read_video_once(video, ocr=OCR, ocr_cache=tmp_path / "ocr", read_captions=False, read_screen=False,
                           color=COLOR, color_cache=tmp_path / "color", engine=FakeOcr())

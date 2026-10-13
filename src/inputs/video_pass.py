@@ -77,10 +77,17 @@ def read_video_once(video: Path, *, ocr: dict, ocr_cache: Path, read_captions: b
         readers["color"] = ColorAnalyzer(color, caption_region,
                                          face_detector(models_dir) if color.get("skin_tones", True) else None)
 
+    shared_reads = 0
     for t, duration, image, due in shared_frames(video, wanted):
         progress(t / duration if duration else 0.0)
-        for name in due:
-            readers[name].feed(t, image)
+        for name in due:                                # captions come before screen: see `wanted`
+            if name == "screen" and "captions" in due and readers["captions"].whole_frame_boxes is not None:
+                readers["screen"].feed(t, image, boxes=readers["captions"].whole_frame_boxes)
+                shared_reads += 1                       # full-frame mode: that frame was just read
+            else:
+                readers[name].feed(t, image)
+    if shared_reads:
+        log.info("on-screen text: %d frames reused from the caption pass", shared_reads)
 
     if "captions" in readers:
         captions = readers["captions"].captions()
