@@ -22,6 +22,15 @@ CHECK_TOGGLES: list[tuple[str, str]] = [
     ("color", "Color grading"),
 ]
 OFF_BY_DEFAULT = {"punctuation"}          # the Anthropic API is paid per video; switched on by choice
+# Shown in the Checks menu only when an admin turned them on in config.yaml (checks.<name>.enabled).
+CONFIG_GATED = {"punctuation"}
+
+
+def visible_toggles(config: dict) -> list[tuple[str, str]]:
+    """The Checks menu: every toggle, minus the API check while config.yaml has it off."""
+    checks = config.get("checks") or {}
+    return [(key, label) for key, label in CHECK_TOGGLES
+            if key not in CONFIG_GATED or (checks.get(key) or {}).get("enabled", False)]
 
 
 def is_video(path: Path) -> bool:

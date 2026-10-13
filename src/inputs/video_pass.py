@@ -75,7 +75,8 @@ def read_video_once(video: Path, *, ocr: dict, ocr_cache: Path, read_captions: b
         readers["screen"] = ScreenTextReader(ocr, engine)
     if "color" in wanted:
         readers["color"] = ColorAnalyzer(color, caption_region,
-                                         face_detector(models_dir) if color.get("skin_tones", True) else None)
+                                         face_detector(models_dir, float(color.get("face_min_score", 0.8)))
+                                         if color.get("skin_tones", True) else None)
 
     shared_reads = 0
     for t, duration, image, due in shared_frames(video, wanted):

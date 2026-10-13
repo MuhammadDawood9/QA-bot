@@ -288,6 +288,7 @@ def build_context(config: dict, client: dict) -> CheckContext:
                       "rules or real examples. Run: python scripts/prepare_data.py", stacklevel=2)
 
     return CheckContext(glossary=glossary, language=language, extra_words=extra_words, settings=settings,
+                        configured={name: bool(s.get("enabled", False)) for name, s in settings.items()},
                         client=client, rules=rules, examples=examples,
                         llm_cache_file=resolve_path(config, "llm_cache_file"),
                         ocr_low_confidence=float(ocr.get("low_confidence", 0.75)),
@@ -344,14 +345,14 @@ def check_status_lines(context: CheckContext, video: Path | None, options: QCOpt
     for name in CHECKS:
         settings = context.settings_for(name)
         title = names.get(name, name)
+        if name == "punctuation" and not context.configured.get(name, settings.get("enabled")):
+            continue                    # the API check is off in config: not mentioned at all
         if name in options.disabled_checks:
             lines.append(f"{title}: switched off for this run")
         elif name == "punctuation":
             stats = context.stats.get("punctuation", {})
             if not options.use_llm:
-                lines.append(f"{title}: skipped (--no-llm)")
-            elif not settings.get("enabled"):
-                lines.append(f"{title}: off in config")
+                lines.append(f"{title}: switched off for this run")
             elif stats.get("skipped"):
                 lines.append(f"{title}: skipped ({stats['skipped']})")
             else:

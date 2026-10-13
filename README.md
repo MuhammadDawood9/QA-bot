@@ -50,9 +50,11 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### Anthropic API key (for the punctuation check)
+### Anthropic API key (only if an admin switches the punctuation check on)
 
-The punctuation check calls the Anthropic API, which is billed per use. It reads your key
+The punctuation check is **off by default** (`checks.punctuation.enabled: false` in `config.yaml`):
+the normal flow needs no API key and no network, and the check is hidden from the app's menu and
+left out of reports. When it is switched on it calls the Anthropic API, which is billed per use. It reads your key
 from the `ANTHROPIC_API_KEY` environment variable; the key is never written in code or config.
 Without it, the punctuation check is skipped with a warning and every other check still runs.
 
@@ -563,13 +565,14 @@ looked for on every sampled frame and brightness and color measured on each; fac
 Pixels are converted to RGB using the video's own color tags; untagged HD video is read as BT.709 and limited range, as players do. **HDR (PQ, HLG) and BT.2020 videos are not measured**, because every threshold assumes SDR Rec.709; the report says so. Measuring takes about 20 s per minute of 1080p video, most of it decoding the video.
 
 Faces are found with OpenCV's YuNet model (232 KB, downloaded once into `models/`, checksum checked).
-All thresholds are in the `color:` block of `config.yaml`. These are measurements, not taste: a
-deliberate look (a grey, desaturated sequence) gets flagged too, so a client with such a style
-switches the matching flag off in its client file:
+All thresholds are in `color.yaml`, each with a comment saying what it means. These are measurements,
+not taste: a deliberate look (a grey, desaturated sequence) gets flagged too, so a client with such a
+style switches the matching flag off (or changes any threshold) under `clients:` in the same file:
 
 ```yaml
-color:
-  skip: ["saturation"]
+clients:
+  E3AC:
+    skip: ["saturation"]
 ```
 
 Test video with planted grading mistakes (one per shot, made with ffmpeg filters from any

@@ -179,7 +179,7 @@ def test_cli_report_flag(monkeypatch, tmp_path, capsys):
     assert f"report: {folder / 'report.md'}" in err and f"report: {docx}" in err
     assert "# QC report: sample_mistakes.srt" in text and "- **Client:** E8D" in text
     assert "  - Captions vs audio (Whisper): not run (no video)" in text
-    assert "  - Punctuation (Anthropic API): skipped (no API key)" in text
+    assert "Punctuation" not in text            # the API check is off in config: not mentioned at all
 
 
 @pytest.mark.slow

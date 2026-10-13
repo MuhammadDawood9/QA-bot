@@ -22,7 +22,7 @@ from PySide6.QtGui import QAction, QActionGroup, QGuiApplication
 from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QSystemTrayIcon
 
 from src.app.assets import assets_dir, available_skins, load_skin
-from src.app.choices import CHECK_TOGGLES, choose_client, file_dialog_filter, qc_options
+from src.app.choices import choose_client, file_dialog_filter, qc_options, visible_toggles
 from src.app.dialogs import SettingsDialog, open_path, show_error
 from src.app.mascot import MascotWindow
 from src.app.settings import APP_NAME, Settings, log_dir
@@ -133,7 +133,7 @@ class CompanionApp:
 
         checks = menu.addMenu("Checks")
         disabled = set(self.settings.get("disabled_checks") or [])
-        for key, label in CHECK_TOGGLES:
+        for key, label in visible_toggles(self.config):
             action = checks.addAction(label)
             action.setCheckable(True)
             action.setChecked(key not in disabled)

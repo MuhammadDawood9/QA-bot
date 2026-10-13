@@ -881,3 +881,38 @@ Windows 10/11 and macOS (Intel, also Apple Silicon); OS-specific code only in `s
 3. Answer the SRT-vs-burned-in question.
 4. Collect 3–5 sample videos plus their caption files if available.
 5. Start Milestone 1 with Claude.
+
+---
+
+## 19. Floor rollout: phases 1-4 (started 2026-10-13)
+
+The app goes on every PC on the QC floor, used by many people on PCs that also edit and QC. Four
+phases, run in one go; each ends with the full test suite green and a commit "Phase N: ...".
+Not built on purpose: ClickUp sync, creative-direction checks, PDF reports.
+
+### Decisions and assumptions
+- **Pending work committed first** (a951add): the full-frame OCR reuse and the wider Confidence column were
+  uncommitted when the rollout started; they got their own commit so Phase 1 starts clean.
+- **Punctuation (API) off by default** (Phase 1): `checks.punctuation.enabled: false` in config.yaml. While off
+  it isn't in the Checks menu (`choices.visible_toggles`) and the report's checks list doesn't mention it
+  (`CheckContext.configured` remembers what config said before the run's own switches). When an admin turns
+  it on, a run switched off from the menu now says "switched off for this run" (was "skipped (--no-llm)").
+  The code, the CLI's `--no-llm` and the API key handling are unchanged behind the flag.
+- **Offline**: with the API check off nothing in a run uses the network once the Whisper model and the 232 KB
+  face model are on disk (Phase 3 adds a shared models folder and an offline bundle, so even that first
+  download isn't needed).
+- **color.yaml** (Phase 1): every color threshold moved out of config.yaml into `color.yaml` (`paths.color_file`)
+  with a comment on each value: `defaults:` plus `clients: {CODE: {only the keys that differ}}`. Values are
+  identical (checked key by key against the old block). Order: an older `color:` block in config.yaml fills
+  only keys color.yaml lacks; then color.yaml defaults; then `clients.<CODE>`; then an older `color:` block in
+  `clients/<CODE>.yaml` (still honoured, applied last). Client codes in color.yaml are normalized ("3AC" = E3AC).
+- **Four constants that were in the code are now settings** with the same values, so behaviour is unchanged:
+  `overexposed_high_factor` 2.5, `cast_medium_factor` 1.6, `flat_luma_range` [60, 200], `face_min_score` 0.8.
+  `face_min_score` joins the color cache key only when changed, so existing caches stay valid.
+
+### Phase 1: Simplify and expose settings — done (2026-10-13)
+- Punctuation off and hidden as above; tests updated: the default CLI run never mentions the API; with the check
+  switched on and no key it is still skipped with the old warning.
+- color.yaml as above, packaged with the app and copied to the user data folder like the other editable files.
+- Kept unchanged: capitalization, spacing, spelling, repeated words, every color check.
+- New tests: `tests/test_settings_phase1.py`.

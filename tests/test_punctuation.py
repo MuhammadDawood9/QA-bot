@@ -170,6 +170,7 @@ def test_min_confidence_from_config_drops_unsure_answers(tmp_path):
     context.llm_cache_file = tmp_path / "cache.json"
     for name in ("too_short", "spelling", "capitalization", "spacing"):
         context.settings[name] = {**context.settings[name], "enabled": False}
+    context.settings["punctuation"] = {**context.settings["punctuation"], "enabled": True}   # off by default
     issues = run_checks(caps, CONFIG, {}, context)
     assert {i.caption_id for i in issues} == set(EXPECTED)        # 0.4 < min_confidence 0.6
 
@@ -371,7 +372,19 @@ def test_cost_estimate():
 
 # --- command line ---------------------------------------------------------------------
 
-def test_cli_without_key_still_runs_other_checks(capsys):
+def test_cli_default_is_offline_and_never_mentions_the_api(capsys, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert main(["--srt", str(FIXTURES / "sample_mistakes.srt")]) == 0
+    captured = capsys.readouterr()
+    assert "too_short" in captured.out
+    assert "punctuation" not in captured.err and "API" not in captured.err
+
+
+def test_cli_without_key_still_runs_other_checks(capsys, monkeypatch):
+    """An admin switched the API check on, but this PC has no key: skipped, the rest still runs."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    checks = {**CONFIG["checks"], "punctuation": {**CONFIG["checks"]["punctuation"], "enabled": True}}
+    monkeypatch.setattr("src.engine.load_config", lambda path=None: {**CONFIG, "checks": checks})
     assert main(["--srt", str(FIXTURES / "sample_mistakes.srt")]) == 0
     captured = capsys.readouterr()
     assert "too_short" in captured.out

@@ -15,6 +15,7 @@ paths:
   extra_words_file: extra_words.txt   # everyday words the spell checker's list is missing
   examples_file: data/examples.csv
   ignore_file: ignore.yaml            # flags you decided are fine (see the file)
+  color_file: color.yaml              # color grading thresholds and per-client color overrides
   exceptions_file: data/exceptions.yaml
   llm_cache_file: cache/punctuation.json   # cached API answers; delete it to force a fresh review
   transcript_cache_dir: cache/transcripts  # one Whisper transcript per video (by file hash)
@@ -136,11 +137,14 @@ checks:
       short_words: ["a", "i", "an", "to", "of", "in", "on", "at", "is", "it", "be", "we", "my", "so",
                     "do", "go", "no", "up", "us", "or", "by", "me", "he", "if", "as", "am"]
 
-  # Punctuation is reviewed by Claude through the Anthropic API. It needs the ANTHROPIC_API_KEY
-  # environment variable; without it the check is skipped with a warning and the rest still run.
-  # Use --no-llm on the command line to skip it on purpose (no API calls, no cost).
+  # Punctuation reviewed by Claude through the Anthropic API. OFF by default: the normal flow needs
+  # no API key and no network, so the bot runs fully offline once set up. While it is off it is
+  # hidden from the app's Checks menu and left out of reports and summaries. To use it, an admin
+  # sets enabled: true here and sets the ANTHROPIC_API_KEY environment variable on that PC (never
+  # in a file that's shared or installed); without the key it is skipped with a warning.
+  # --no-llm on the command line skips it for one run.
   punctuation:
-    enabled: true
+    enabled: false
     model: claude-sonnet-5-5        # current Sonnet; claude-opus-5-5 is the stronger, pricier option
     effort: low                     # low is the recommended start for classification; raise only if quality needs it
     max_tokens: 16000               # per request; includes the model's thinking, not just the JSON
@@ -208,39 +212,9 @@ checks:
     max_term_frequency: 5000     # on-screen words more common than this aren't treated as names
     require_capital: true        # only check capitalized caption words; false for all-lowercase styles
 
-# Color grading, measured shot by shot when a video is given (--no-color to skip).
-# A client with a deliberate look changes these in a "color:" block in its client file, e.g.
-#   color:
-#     skip: ["saturation"]          # this client's grey, desaturated look is intended
-color:
-  enabled: true
-  sample_fps: 4                 # frames looked at per second (cuts are found on every one)
-  cut_threshold: 0.35           # color-histogram change (0-1) that counts as a cut between shots
-  min_shot_sec: 0.5
-  measure_every_n_frames: 1     # brightness and color on every frame of a shot. 2 is faster but can lose
-                                # a flag: frames at a shot's edges often belong to the next shot, and with
-                                # fewer frames they decide the shot's middle value (burned_box shot 2)
-  skin_tones: true              # find faces (YuNet model, downloaded once, 232 KB) and measure skin
-  face_every_n_frames: 4        # faces looked for on every 4th frame of a shot (from its first)
-  skip: []                      # issue types not to report, e.g. ["saturation", "color_cast"]
-  # Flags on one shot. Brightness values are 0-255; color values are Lab (neutral = 0).
-  clipped_white: 0.04           # share of pure white pixels that counts as overexposed (2.5x = high)
-  clipped_black: 0.15           # share of pure black pixels that counts as crushed
-  dark_median: 40               # too dark: middle brightness below this...
-  dark_white_level: 200         # ...and even the brightest parts below this
-  lifted_black_level: 40        # darkest 2% brighter than this = lifted, washed-out blacks
-  min_tonal_range: 120          # brightest minus darkest below this = flat
-  dull_chroma: 6                # mean saturation below this = almost grey
-  oversaturated_chroma: 40
-  cast_strength: 6              # tint of whites and greys that counts as a color cast
-  skin_hue_range: [20, 70]      # natural skin hue, degrees (Lab); below = pink/magenta, above = yellow/green
-  skin_min_chroma: 9
-  skin_max_chroma: 38
-  # Shots that don't match
-  mismatch_min_shot_sec: 1.0    # shorter shots aren't compared
-  skin_hue_jump: 12             # skin hue change between consecutive shots with faces, degrees
-  mismatch_cast: 8              # tint difference from the video's typical shot
-  mismatch_chroma: 12           # saturation difference from the video's typical shot
+# Color grading, measured shot by shot when a video is given (--no-color to skip). Every color
+# threshold, with what it means, and the per-client overrides (including each client's skip list)
+# are in color.yaml (paths.color_file).
 
 # The QC report (python -m src.main ... --report).
 report:

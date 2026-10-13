@@ -1,0 +1,82 @@
+# Color grading checks: every threshold in one place.
+#
+# The bot cuts the video into shots, measures each shot (brightness, black and white levels,
+# saturation, the tint of whites and greys, skin tones), then flags:
+#   - problems a shot has on its own (overexposed, too dark, crushed blacks, flat contrast,
+#     saturation, color cast, skin tone), and
+#   - shots that don't match (skin hue jumping between shots, one shot far from the rest).
+#
+# Units: brightness values are 0-255 (8-bit video levels). Color values are CIE Lab:
+# a* (green -/red +) and b* (blue -/yellow +); 0, 0 is neutral grey. "Chroma" is how far a color
+# is from grey (Lab saturation). Hue is in degrees.
+#
+# Raising a "trigger" threshold makes the check stricter only where it says so: read the comment.
+# After changing a measuring setting (sample_fps, cut_threshold, min_shot_sec,
+# measure_every_n_frames, face_every_n_frames, skin_tones) videos are measured again; the flag
+# thresholds are applied to cached measurements, so changing them costs nothing.
+#
+# Per-client changes go under "clients:" at the bottom, with only the keys that differ.
+# (An older "color:" block inside clients/<CODE>.yaml still works and is applied after this file.)
+
+defaults:
+  enabled: true                 # false = no color checks for anyone (a client can turn them back on)
+
+  # --- Measuring -----------------------------------------------------------------------------
+  sample_fps: 4                 # frames looked at per second; cuts are looked for on every one
+  cut_threshold: 0.35           # color-histogram change (0-1) between two frames that counts as a cut
+  min_shot_sec: 0.5             # a cut sooner than this after the last one is ignored (flashes, fast pans)
+  measure_every_n_frames: 1     # brightness and color on every sampled frame of a shot. 2 is faster but
+                                # can lose a flag: frames at a shot's edges often belong to the next shot,
+                                # and with fewer frames they decide the shot's middle value
+  skin_tones: true              # find faces (YuNet model, 232 KB, fetched once or from the models folder)
+  face_every_n_frames: 4        # faces looked for on every 4th sampled frame of a shot (from its first)
+  face_min_score: 0.8           # how sure the face finder must be (0-1); lower finds more, and more non-faces
+
+  # --- Which issue types to report -------------------------------------------------------------
+  # Types: overexposed, underexposed, crushed_blacks, flat_contrast, saturation, color_cast,
+  # skin_tone, shot_mismatch. A client with a deliberate look skips the ones that look is made of.
+  skip: []
+
+  # --- One shot on its own -----------------------------------------------------------------------
+  # Overexposed: this share (0-1) of the picture is pure white (clipped, detail gone).
+  clipped_white: 0.04
+  overexposed_high_factor: 2.5  # ...and at this many times clipped_white (10%) it is high severity
+  # Too dark: the middle brightness is below dark_median AND even the brightest parts stay below
+  # dark_white_level (a night shot with bright lights in it is not "too dark").
+  dark_median: 40
+  dark_white_level: 200
+  # Crushed blacks: this share (0-1) of the picture is pure black.
+  clipped_black: 0.15
+  # Washed-out, lifted blacks: the darkest 2% of the picture is brighter than this.
+  lifted_black_level: 40
+  # Low contrast: brightest minus darkest is under min_tonal_range, checked only on shots whose
+  # middle brightness is between flat_luma_range (very dark and very bright shots are naturally flat).
+  min_tonal_range: 120
+  flat_luma_range: [60, 200]
+  # Saturation: mean chroma below dull_chroma = almost grey (low severity); above
+  # oversaturated_chroma = oversaturated (medium).
+  dull_chroma: 6
+  oversaturated_chroma: 40
+  # Color cast: whites and greys tinted at least this far from neutral (Lab distance) = low severity,
+  # at cast_medium_factor times it (about 10) = medium.
+  cast_strength: 6
+  cast_medium_factor: 1.6
+  # Skin tone: natural skin hue sits in skin_hue_range (degrees). Below = too pink/magenta, above =
+  # too yellow/green. Chroma above skin_max_chroma = too orange; below skin_min_chroma = pale/grey.
+  skin_hue_range: [20, 70]
+  skin_min_chroma: 9
+  skin_max_chroma: 38
+
+  # --- Shots that don't match ---------------------------------------------------------------------
+  mismatch_min_shot_sec: 1.0    # shorter shots aren't compared (and aren't the reference)
+  skin_hue_jump: 12             # skin hue change between consecutive shots with faces, degrees
+  mismatch_cast: 8              # tint difference (Lab distance) from the video's typical shot
+  mismatch_chroma: 12           # saturation difference from the video's typical shot
+
+# Per-client overrides: the client code, then only the keys that differ from "defaults".
+# Example:
+#   clients:
+#     E3AC:
+#       skip: ["saturation"]        # the grey, desaturated wedding look is intended
+#       cast_strength: 8            # warm sunset grades: only stronger tints are flagged
+clients: {}

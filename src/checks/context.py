@@ -27,6 +27,8 @@ class CheckContext:
     ocr_low_confidence: float = 0.75                       # OCR captions read less surely: text issues marked doubtful
     ocr_always_doubtful: tuple[str, ...] = ()              # issue types always marked doubtful on OCR captions
     progress: object | None = None                         # a src.utils.progress.Stage for slow checks, or None
+    configured: dict = field(default_factory=dict)         # check name -> enabled in config + client file, before
+                                                           # this run's switches (so "off in config" can be told apart)
 
     @cached_property
     def dictionary(self) -> Dictionary:

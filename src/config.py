@@ -16,8 +16,8 @@ DEFAULT_CONFIG = PROJECT_ROOT / "config.yaml"
 # Files the user may edit. A packaged app (PyInstaller) can't write inside itself, so on its first
 # run they're copied from the bundle into the OS data folder and read from there; the cache,
 # models and reports paths in config.yaml then also land in that folder.
-EDITABLE_FILES = ("config.yaml", "rules.yaml", "glossary.txt", "extra_words.txt", "ignore.yaml", "clients",
-                  "data/examples.csv")
+EDITABLE_FILES = ("config.yaml", "rules.yaml", "glossary.txt", "extra_words.txt", "ignore.yaml", "color.yaml",
+                  "clients", "data/examples.csv")
 
 
 def is_frozen() -> bool:
@@ -97,7 +97,26 @@ def load_config(path: Path | None = None) -> dict:
     if shipped is not None and shipped.is_file() and shipped.resolve() != path.resolve():
         config = deep_merge(load_yaml(shipped), config)
     config["_root"] = path.resolve().parent
+    apply_color_file(config)
     return config
+
+
+def apply_color_file(config: dict) -> None:
+    """Read color.yaml (paths.color_file) into config["color"] (its "defaults:") and
+    config["_color_clients"] (its "clients:", by normalized code). The file's values win over an
+    older "color:" block in config.yaml, which only fills keys the file doesn't have. A packaged
+    app lays the user's copy over the color.yaml it ships with, as for config.yaml."""
+    name = (config.get("paths") or {}).get("color_file")
+    if not name:
+        return
+    path = Path(config["_root"]) / name
+    data = load_yaml(path) if path.is_file() else {}
+    shipped = Path(getattr(sys, "_MEIPASS", "")) / "color.yaml" if is_frozen() else None
+    if shipped is not None and shipped.is_file() and shipped.resolve() != path.resolve():
+        data = deep_merge(load_yaml(shipped), data)
+    config["color"] = deep_merge(config.get("color") or {}, data.get("defaults") or {})
+    config["_color_clients"] = {normalize_client_code(str(code)): block or {}
+                                for code, block in (data.get("clients") or {}).items()}
 
 
 def resolve_path(config: dict, key: str) -> Path:
@@ -139,8 +158,11 @@ def check_settings(config: dict, client: dict, check_name: str) -> dict:
 
 
 def color_settings(config: dict, client: dict) -> dict:
-    """config.yaml "color:" with the client's "color:" block applied (directly under "color:")."""
-    return deep_merge(config.get("color", {}), (client or {}).get("color") or {})
+    """The color defaults (color.yaml "defaults:"), then the client's block under color.yaml
+    "clients:", then an older "color:" block in the client's own file."""
+    code = normalize_client_code((client or {}).get("client"))
+    merged = deep_merge(config.get("color", {}), (config.get("_color_clients") or {}).get(code) or {})
+    return deep_merge(merged, (client or {}).get("color") or {})
 
 
 def ocr_settings(config: dict, client: dict) -> dict:

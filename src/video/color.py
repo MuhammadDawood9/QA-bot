@@ -263,6 +263,11 @@ def _issue(shot: Shot, kind: str, severity: str, message: str, suggestion: str, 
                  message=message, suggestion=suggestion, confidence=confidence)
 
 
+def _within(value: float, bounds) -> bool:
+    lo, hi = bounds
+    return lo <= value <= hi
+
+
 def shot_issues(shot: Shot, s: dict) -> list[Issue]:
     """Problems a shot has on its own."""
     if shot.is_black:
@@ -270,7 +275,7 @@ def shot_issues(shot: Shot, s: dict) -> list[Issue]:
     out = []
     white = shot.value("clipped_white")
     if white is not None and white >= s.get("clipped_white", 0.04):
-        out.append(_issue(shot, OVEREXPOSED, "high" if white >= 2.5 * s.get("clipped_white", 0.04) else "medium",
+        out.append(_issue(shot, OVEREXPOSED, "high" if white >= s.get("overexposed_high_factor", 2.5) * s.get("clipped_white", 0.04) else "medium",
                           f"Overexposed: {white:.0%} of the picture is clipped pure white, so detail there is lost.",
                           "Bring the highlights / exposure down until whites keep their detail.", 0.8))
     luma, top = shot.value("luma_median"), shot.value("white_level")
@@ -291,7 +296,7 @@ def shot_issues(shot: Shot, s: dict) -> list[Issue]:
                               f"Washed-out, lifted blacks: the darkest parts are grey ({lifted:.0f}/255 instead of "
                               f"near 0), tonal range {top - lifted:.0f} of 255.",
                               "Set the black point: pull the blacks down and add contrast.", 0.6))
-        elif top - lifted < s.get("min_tonal_range", 120) and 60 <= (luma or 0) <= 200:
+        elif top - lifted < s.get("min_tonal_range", 120) and _within(luma or 0, s.get("flat_luma_range", [60, 200])):
             out.append(_issue(shot, FLAT_CONTRAST, "low",
                               f"Low contrast: the tonal range is only {top - lifted:.0f} of 255.",
                               "Add contrast: spread the blacks and whites further apart.", 0.5))
@@ -306,7 +311,7 @@ def shot_issues(shot: Shot, s: dict) -> list[Issue]:
     if ca is not None and cb is not None:
         strength = math.hypot(ca, cb)
         if strength >= s.get("cast_strength", 6):
-            out.append(_issue(shot, COLOR_CAST, "medium" if strength >= 1.6 * s.get("cast_strength", 6) else "low",
+            out.append(_issue(shot, COLOR_CAST, "medium" if strength >= s.get("cast_medium_factor", 1.6) * s.get("cast_strength", 6) else "low",
                               f"{cast_name(ca, cb).capitalize()} color cast: whites and greys are tinted "
                               f"(a* {ca:+.0f}, b* {cb:+.0f}; neutral is 0, 0).",
                               "White-balance on something that should be white or grey.", 0.6))
@@ -437,6 +442,8 @@ def hdr_transfer(video: Path) -> str | None:
 def color_cache_file(video: Path, settings: dict, caption_region: dict | None, cache_dir: Path) -> Path:
     key_settings = {k: settings.get(k) for k in ("sample_fps", "cut_threshold", "min_shot_sec", "face_every_n_frames",
                                                   "measure_every_n_frames")}
+    if float(settings.get("face_min_score", 0.8)) != 0.8:      # only when changed, so existing caches stay valid
+        key_settings["face_min_score"] = float(settings["face_min_score"])
     key = text_hash(COLOR_VERSION, json.dumps(key_settings, sort_keys=True), json.dumps(caption_region, sort_keys=True))[:10]
     return Path(cache_dir) / f"{file_sha256(video)[:16]}-{key}.json"
 
@@ -477,7 +484,8 @@ def read_color(video: Path, settings: dict, caption_region: dict | None = None, 
     log.info("measuring the color of %s...", video.name)
     started = time.monotonic()
     shots = analyze(sample_frames(video, float(settings.get("sample_fps", 4))), settings, caption_region,
-                    face_detector(models_dir) if settings.get("skin_tones", True) else None, progress)
+                    face_detector(models_dir, float(settings.get("face_min_score", 0.8)))
+                    if settings.get("skin_tones", True) else None, progress)
     log.info("color: %d shots measured in %.0f s", len(shots), time.monotonic() - started)
     if cache_file is not None:
         save_shots(cache_file, video, shots)
