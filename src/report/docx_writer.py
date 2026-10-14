@@ -24,7 +24,7 @@ from docx.shared import Cm, Pt, RGBColor
 
 from src.ignore import glossary_line, rule_line
 from src.models import SEVERITIES
-from src.report.builder import ReportData, captions_source, label
+from src.report.builder import OVERLAP_NOTE, ReportData, captions_source, label, region_rows
 from src.utils.timecode import format_timestamp
 
 PAGE_SIZES = {"a4": (21.0, 29.7), "letter": (21.59, 27.94)}     # cm, portrait; the report turns them landscape
@@ -198,6 +198,12 @@ def problem(issue):
         sev.font.color.rgb = RGBColor.from_string(SEVERITY_COLORS[issue.severity])
         paragraph.add_run().add_break()
         paragraph.add_run(clean(issue.message))
+        if issue.signals:
+            paragraph.add_run().add_break()
+            signals = paragraph.add_run("Signals: " + clean(issue.signals))
+            signals.italic = True
+            signals.font.size = Pt(8)
+            signals.font.color.rgb = RGBColor.from_string("595959")
     return fill
 
 
@@ -317,6 +323,21 @@ def write_docx(data: ReportData) -> Path:
                         fill=FLAGGED_FILL)
             else:
                 add_row(t, [format_timestamp(cap.start), str(cap.id), cap.flat_text, ""])
+
+    # What the audio checks left alone
+    if info.audio_regions or info.audio_only:
+        doc.add_heading("Regions ignored by the bot", level=1)
+        doc.add_paragraph("Parts of the audio where the bot didn't report stutters, cuts or dead air because they "
+                          "look intentional (music, effects, the client's cues) or are overlapping speech. "
+                          "Spot-check that nothing important is in them.")
+        doc.add_paragraph().add_run(OVERLAP_NOTE).bold = True
+        if info.audio_regions:
+            t = table(doc, ["Start", "End", "What", "Why", "Flags hidden"],
+                      [2.4, 2.4, 4.0, content_cm - 2.4 - 2.4 - 4.0 - 2.4, 2.4], right_align={4})
+            for row in region_rows(info.audio_regions):
+                add_row(t, row)
+        else:
+            doc.add_paragraph("None found.")
 
     # Lines for ignore.yaml, so a false alarm can be hidden next time
     if data.issues:

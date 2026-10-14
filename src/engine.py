@@ -84,7 +84,9 @@ class QCOptions:
     srt_path: Path | None = None             # use this caption file instead of reading the captions off the video
     use_llm: bool = True                     # the punctuation check (Anthropic API, costs money)
     check_color: bool = True
-    disabled_checks: frozenset[str] = frozenset()    # names from src.checks.CHECKS, or "color"
+    disabled_checks: frozenset[str] = frozenset()    # names from src.checks.CHECKS, or "color", "audio"
+    cue_sheet: Path | None = None            # an audio episode's cue sheet; default <episode>.cues.csv next to it
+    audio_overrides: dict = field(default_factory=dict)   # laid over the client's audio settings (evaluation)
     config_path: Path | None = None          # default: config.yaml next to src/
 
 
@@ -251,6 +253,33 @@ def audio_settings(config: dict, client: dict, audio_only: bool) -> dict:
     return settings
 
 
+def audio_guidelines(config: dict, client: dict) -> dict:
+    """config.yaml "audio_guidelines:" with the client file's block laid over it."""
+    return deep_merge(config.get("audio_guidelines") or {}, (client or {}).get("audio_guidelines") or {})
+
+
+def reference_folder(config: dict, guide: dict) -> Path | None:
+    """The client's reference audio folder: absolute, or relative to the data folder."""
+    folder = guide.get("reference_folder")
+    if not folder:
+        return None
+    path = Path(str(folder))
+    return path if path.is_absolute() else Path(config["_root"]) / path
+
+
+def _references(config: dict, guide: dict, ffmpeg: str, sr: int) -> list:
+    from src.audio.media import load_audio
+    from src.audio.regions import reference_files
+
+    out = []
+    for f in reference_files(reference_folder(config, guide)):
+        try:
+            out.append((f.name, load_audio(f, ffmpeg, sr)))
+        except RuntimeError as exc:
+            log.warning("reference cue %s unreadable: %s", f.name, exc)
+    return out
+
+
 def _disfluent_transcript(path: Path, config: dict, context: CheckContext, settings: dict, stage: Stage) -> list:
     """Whisper's words with timestamps, asked to keep "um", "I- I" and false starts. Cached like
     the caption transcript (the prompt and the setting are part of the cache key)."""
@@ -259,7 +288,8 @@ def _disfluent_transcript(path: Path, config: dict, context: CheckContext, setti
                "condition_on_previous_text": bool(settings.get("condition_on_previous_text", False)),
                "vad_filter": bool(settings.get("whisper_vad", False))}
     words = get_transcript(path, config.get("machine", {}), whisper, context.glossary.all_terms(),
-                           resolve_path(config, "transcript_cache_dir"), model_dirs(config), progress=stage)
+                           resolve_path(config, "transcript_cache_dir"), model_dirs(config), progress=stage,
+                           need_segments=True)
     context.stats["transcript"] = {"model": config.get("machine", {}).get("whisper_model_size", "base")}
     return words
 
@@ -268,7 +298,7 @@ def _audio_edits(path: Path | None, config: dict, client: dict, context: CheckCo
                  stage: Stage, audio_only: bool, words: list | None = None) -> list[Issue]:
     """Stutters, repeats, retakes, cuts and dead air (src/audio/edits.py), when the client's audio
     settings switch them on (always for an audio file unless the client says no)."""
-    settings = audio_settings(config, client, audio_only)
+    settings = deep_merge(audio_settings(config, client, audio_only), options.audio_overrides or {})
     if path is None or not settings.get("enabled") or "audio" in options.disabled_checks:
         if "audio" in options.disabled_checks:
             context.stats["audio"] = {"skipped": "switched off for this run"}
@@ -294,7 +324,20 @@ def _audio_edits(path: Path | None, config: dict, client: dict, context: CheckCo
                               context.glossary.all_terms(), resolve_path(config, "transcript_cache_dir"),
                               model_dirs(config))
 
-    issues, stats = check_audio(samples, sr, words, settings, None, backup_words=plain_words)
+    from src.audio.regions import cue_sheet_file, read_cue_sheet
+
+    guide = audio_guidelines(config, client)
+    references = _references(config, guide, ffmpeg, sr)
+    sheet_path = Path(options.cue_sheet) if options.cue_sheet else cue_sheet_file(path)
+    sheet, problems = read_cue_sheet(sheet_path) if sheet_path.is_file() else ([], [])
+    for p in problems:
+        log.warning(p)
+    issues, stats = check_audio(samples, sr, words, settings, None, backup_words=plain_words,
+                                segments=getattr(words, "segments", None), guide=guide, cue_sheet=sheet,
+                                references=references)
+    stats["cue_sheet"] = sheet_path.name if sheet_path.is_file() else None
+    stats["cue_sheet_problems"] = problems
+    stats["references"] = [name for name, _ in references]
     stats["sensitivity"] = str(settings.get("sensitivity", "medium"))
     stats["checks"] = [k for k, v in (s.get("checks") or {}).items() if v]
     context.stats["audio"] = stats
@@ -514,6 +557,20 @@ def check_status_lines(context: CheckContext, video: Path | None, options: QCOpt
         lines.append(f"Audio edits ({audio.get('sensitivity', 'medium')} sensitivity): {audio.get('duration', 0):.0f} s "
                      f"checked, {audio.get('words', 0)} words heard; checks: {', '.join(audio.get('checks', []))}"
                      + (f"; filler words: {fillers}" if fillers else "; no filler words"))
+        regions = audio.get("regions") or []
+        if regions:
+            kinds = {}
+            for r in regions:
+                kinds[r["kind"]] = kinds.get(r["kind"], 0) + 1
+            hidden = sum((audio.get("hidden") or {}).values())
+            lines.append("Regions ignored by the bot: " + ", ".join(f"{n} {k.replace('_', ' ')}" for k, n in kinds.items())
+                         + f" ({hidden} flag{'s' if hidden != 1 else ''} hidden; listed at the end of the report)"
+                         + ("" if audio.get("suppression", True) else " (suppression OFF: nothing hidden)"))
+        if audio.get("cue_sheet"):
+            lines.append(f"Cue sheet: {audio['cue_sheet']}" + (f" ({len(audio['cue_sheet_problems'])} line(s) skipped)"
+                                                              if audio.get("cue_sheet_problems") else ""))
+        if audio.get("references"):
+            lines.append(f"Reference cues looked for: {', '.join(audio['references'])}")
     elif context.stats.get("audio_file"):
         lines.append("Audio edits: off for this client")
     if audio_file:
@@ -558,7 +615,8 @@ def write_report(result: QCResult, formats: Sequence[str] | None = None,
     info = ReportInfo(srt=result.srt, video=result.video, client=result.client.get("client"),
                       rules_version=rules_version, checks=result.checks, app_version=__version__,
                       client_rules_version=client_rules_version(config, result.client.get("client")),
-                      audio_only=getattr(result, "audio_only", False))
+                      audio_only=getattr(result, "audio_only", False),
+                      audio_regions=list((result.context.stats.get("audio") or {}).get("regions") or []))
     return build_report(result.captions, list(result), info, settings, ffmpeg)
 
 

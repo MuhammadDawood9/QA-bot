@@ -38,6 +38,7 @@ from src.audio.media import load_audio  # noqa: E402
 from src.audio.transcribe import get_transcript  # noqa: E402
 from src.config import load_config, model_dirs, resolve_path  # noqa: E402
 from src.utils.system import find_ffmpeg  # noqa: E402
+from src.utils.timecode import format_timestamp  # noqa: E402
 
 SR = 22050
 SCRIPT = [
@@ -104,6 +105,19 @@ def run(cmd: list[str]) -> None:
     result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         raise SystemExit(f"error: ffmpeg failed: {result.stderr.strip()[-600:]}")
+
+
+def write_truth_csv(path: Path, planted: str, control: str, truth: list[dict]) -> None:
+    """The planted mistakes as ground truth for scripts/evaluate.py (--truth), the control as a file with no notes."""
+    import csv
+
+    with path.open("w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["video", "timestamp", "client", "issue_type", "note_text"])
+        for m in truth:
+            kind = "repeated_phrase" if m["type"] == "repeated_take" else m["type"]
+            w.writerow([planted, format_timestamp(m["time"]), "E2CL", kind, m["words"]])
+        w.writerow([control, "", "E2CL", "none", "clean control"])
 
 
 def main(argv=None) -> int:
@@ -222,6 +236,7 @@ def main(argv=None) -> int:
     truth_file = args.out / "e2cl_planted_truth.json"
     truth_file.write_text(json.dumps({"source": str(args.source or "text-to-speech"), "mistakes": truth}, indent=2),
                           encoding="utf-8")
+    write_truth_csv(args.out / "ground_truth_audio.csv", planted.name, control.name, truth)
     print(f"wrote {control} (clean control: must give no flags)")
     print(f"wrote {planted} with {len(truth)} planted mistakes; times in {truth_file}")
     for t in truth:

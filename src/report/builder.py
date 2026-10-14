@@ -55,7 +55,17 @@ LABELS = {
 }
 _RANK = {s: i for i, s in enumerate(SEVERITIES)}          # high = 0 (worst)
 CSV_COLUMNS = ["timestamp", "seconds", "caption_id", "type", "severity", "caption", "problem",
-               "suggestion", "confidence"]
+               "suggestion", "confidence", "signals"]
+REGION_LABELS = {"overlap": "Overlapping speech", "overlap_ok": "Overlap (cue sheet)", "music": "Music",
+                 "sfx": "Sound effect", "cue": "Client cue", "unexpected": "Music / effect, still checked"}
+OVERLAP_NOTE = ("Overlapping speech lowers transcript accuracy, so it isn't checked for stutters or repeats: "
+                "listen to the overlap zones yourself.")
+
+
+def region_rows(regions: list[dict]) -> list[list[str]]:
+    """[start, end, what, why, flags hidden] for the report's "Regions ignored by the bot"."""
+    return [[format_timestamp(r["start"]), format_timestamp(r["end"]), REGION_LABELS.get(r["kind"], r["kind"]),
+             f"{r['why']} ({r['source']})", str(r.get("suppressed", 0) or "")] for r in regions]
 
 
 @dataclass
@@ -69,6 +79,7 @@ class ReportInfo:
     app_version: str | None = None
     client_rules_version: str | None = None             # hash of the client file (+ its color settings)
     audio_only: bool = False                            # an audio file: clips and waveforms, no screenshots
+    audio_regions: list[dict] = field(default_factory=list)   # what the audio checks left alone, and why
 
 
 def captions_source(info: "ReportInfo") -> str:
@@ -136,7 +147,7 @@ def write_csv(path: Path, issues: Sequence[Issue]) -> None:
         writer.writerow(CSV_COLUMNS)
         for i in issues:
             writer.writerow([format_timestamp(i.timestamp), f"{i.timestamp:.3f}", i.caption_id, i.type,
-                             i.severity, i.original, i.message, i.suggestion, f"{i.confidence:.2f}"])
+                             i.severity, i.original, i.message, i.suggestion, f"{i.confidence:.2f}", i.signals])
 
 
 @dataclass
@@ -222,6 +233,8 @@ def write_markdown(data: ReportData) -> Path:
     lines += _details(data.flagged, data.by_caption, data.caps, data.shots, data.info, data.wanted_shots, data.clips)
     if data.captions or not data.info.audio_only:
         lines += _appendix(data.captions, data.by_caption)
+    if data.info.audio_regions or data.info.audio_only:
+        lines += _regions(data.info.audio_regions)
     path = data.folder / "report.md"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     return path
@@ -332,7 +345,22 @@ def _details(flagged, by_caption, caps, shots, info, wanted_shots, clips=None) -
         for i in group:
             lines.append(f"| {label(i.type)} | {i.severity} | {md(i.message)} | {md(i.suggestion)} | {i.confidence:.2f} |")
         lines.append("")
+        signals = [i.signals for i in group if i.signals]
+        if signals:
+            lines += [f"*Signals: {md('; '.join(signals))}*", ""]
     return lines
+
+
+def _regions(regions: list[dict]) -> list[str]:
+    lines = ["## Regions ignored by the bot", "",
+             "Parts of the audio where the bot didn't report stutters, cuts or dead air because they look "
+             "intentional (music, effects, the client's cues) or are overlapping speech. Spot-check that "
+             "nothing important is in them.", "", f"**{OVERLAP_NOTE}**", ""]
+    if not regions:
+        return lines + ["None found.", ""]
+    lines += ["| Start | End | What | Why | Flags hidden |", "|---|---|---|---|---:|"]
+    lines += [f"| {a} | {b} | {md(what)} | {md(why)} | {n} |" for a, b, what, why, n in region_rows(regions)]
+    return lines + [""]
 
 
 def _appendix(captions, by_caption) -> list[str]:

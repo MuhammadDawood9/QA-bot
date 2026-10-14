@@ -55,6 +55,7 @@ class CompanionApp:
         self.mascot.customContextMenuRequested.connect(
             lambda pos: self.build_menu(self.mascot).exec(self.mascot.mapToGlobal(pos)))
         self.mascot.clicked.connect(self.pick_video)
+        self.mascot.cue_sheets_dropped.connect(self.cue_sheets_dropped)
         self.mascot.files_dropped.connect(self.videos_dropped)
         self.queue: list[Path] = []                 # videos waiting for the current check to end
 
@@ -124,6 +125,7 @@ class CompanionApp:
         menu.addSeparator()
 
         menu.addAction("Check a video...", self.pick_video)        # while busy: added to the queue
+        menu.addAction("Attach a cue sheet to an episode...", self.attach_cue_sheet_dialog)
         cancel = menu.addAction("Cancel check", self.cancel_check)
         cancel.setEnabled(self.runner.busy)
         clear = menu.addAction(f"Clear queue ({len(self.queue)} waiting)", self.clear_queue)
@@ -285,8 +287,16 @@ class CompanionApp:
         log.info(self.status)
         self.mascot.set_state("working")
         self.mascot.set_progress("Starting", 0.0)
-        self.runner.start(video, client, qc_options(self.settings.get("disabled_checks") or []), self.reports_dir,
-                          shared_reports=self.shared_reports_dir())
+        from dataclasses import replace
+
+        from src.audio.regions import find_cue_sheet
+
+        options = qc_options(self.settings.get("disabled_checks") or [])
+        cue = find_cue_sheet(video, self.cue_sheet_dir)
+        if cue is not None:
+            options = replace(options, cue_sheet=cue)
+            log.info("cue sheet for %s: %s", video.name, cue)
+        self.runner.start(video, client, options, self.reports_dir, shared_reports=self.shared_reports_dir())
 
     def cancel_check(self) -> None:
         if self.runner.busy:
@@ -337,6 +347,46 @@ class CompanionApp:
         if self.tray is not None and self.settings.get("notifications"):
             icon = QSystemTrayIcon.MessageIcon.Warning if error else QSystemTrayIcon.MessageIcon.Information
             self.tray.showMessage(title, message, icon, 8000)
+
+    # --- cue sheets (podcasts) ----------------------------------------------------------------
+
+    @property
+    def cue_sheet_dir(self) -> Path:
+        """Where a cue sheet goes when the episode's own folder can't be written."""
+        return Path(self.config.get("_local_root") or self.config["_root"]) / "cue_sheets"
+
+    def cue_sheets_dropped(self, media: list, csvs: list) -> None:
+        """An episode dropped together with its cue sheet (start,end,type,note): kept next to the
+        episode as <episode>.cues.csv, so later checks of it use it too."""
+        from src.audio.regions import attach_cue_sheet, match_cue_sheets
+
+        for episode, csv_file in match_cue_sheets([Path(m) for m in media], [Path(c) for c in csvs]).items():
+            try:
+                where, problems = attach_cue_sheet(episode, csv_file, self.cue_sheet_dir)
+            except (OSError, ValueError) as exc:
+                self.notify("Cue sheet not used", f"{Path(csv_file).name}: {exc}", error=True)
+                continue
+            note = f" ({len(problems)} line(s) skipped)" if problems else ""
+            self.notify("Cue sheet attached", f"{Path(episode).name} uses {where.name}{note}.")
+
+    def attach_cue_sheet_dialog(self) -> None:
+        from src.audio.regions import attach_cue_sheet
+
+        start = self.settings.get("last_folder") or str(Path.home())
+        episode, _ = QFileDialog.getOpenFileName(None, "The episode", start, file_dialog_filter())
+        if not episode:
+            return
+        csv_file, _ = QFileDialog.getOpenFileName(None, "Its cue sheet (start,end,type,note)", str(Path(episode).parent),
+                                                  "Cue sheet (*.csv)")
+        if not csv_file:
+            return
+        try:
+            where, problems = attach_cue_sheet(Path(episode), Path(csv_file), self.cue_sheet_dir)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(None, "Video QC Bot", f"The cue sheet wasn't attached: {exc}")
+            return
+        QMessageBox.information(None, "Video QC Bot", f"{Path(episode).name} will use {where}."
+                                + (f"\n\n{len(problems)} line(s) skipped:\n" + "\n".join(problems[:10]) if problems else ""))
 
     # --- clients ---------------------------------------------------------------------------
 

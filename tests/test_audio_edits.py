@@ -132,7 +132,8 @@ def test_clean_speech_gives_no_flags(seed):
 
 def test_planted_mistakes_are_found_with_their_type():
     """Six files, each with a stutter Whisper wrote down once, a repeated phrase, a retake, a word
-    cut off mid-word, a room tone change (and back) and 4 s of dead air."""
+    cut off mid-word, a room tone change (and back) and 4 s of dead air. A room tone change on its
+    own is not a cut any more (two mics or rooms in one podcast change it at every turn)."""
     found, total, false_alarms = {}, {}, 0
     for seed in range(21, 27):
         p = planted(seed)
@@ -142,8 +143,9 @@ def test_planted_mistakes_are_found_with_their_type():
             found[kind] = found.get(kind, 0) + any(abs(i.timestamp - t) <= 1.5 and i.type == kind for i in issues)
         false_alarms += sum(1 for i in issues if all(abs(i.timestamp - t) > 1.5 for _, t in p.truth))
     assert false_alarms == 0
-    for kind in ("stutter", "repeated_phrase", "dead_air", "jump_cut"):
+    for kind in ("stutter", "repeated_phrase", "dead_air"):
         assert found[kind] == total[kind], (kind, found, total)
+    assert found["jump_cut"] == 0                                  # room tone alone: not flagged
     assert found["abrupt_cut"] >= total["abrupt_cut"] - 1, found               # 5 of 6 at least
 
 
@@ -214,7 +216,8 @@ def podcast(tmp_path, monkeypatch):
     path = write_wav(tmp_path / "E2CL episode 7.wav", p.speech.samples, p.speech.sr)
     asked = []
 
-    def fake_transcript(video, machine, settings, terms, cache_dir, models_dir=None, transcriber=None, progress=None):
+    def fake_transcript(video, machine, settings, terms, cache_dir, models_dir=None, transcriber=None, progress=None,
+                        need_segments=False):
         asked.append(dict(settings))
         return p.speech.words
 
@@ -227,7 +230,7 @@ def test_audio_file_runs_only_the_audio_checks(podcast):
     result = run_qc(path, "E2CL", config=CONFIG)
     assert result.audio_only and result.captions == []
     types = {i.type for i in result}
-    assert {"stutter", "repeated_phrase", "dead_air", "jump_cut"} <= types
+    assert {"stutter", "repeated_phrase", "dead_air"} <= types
     assert all(i.caption_id <= -3000 for i in result)
     assert asked and asked[0]["initial_prompt_prefix"].startswith("Umm") and asked[0]["condition_on_previous_text"] is False
     assert asked[0]["vad_filter"] is False

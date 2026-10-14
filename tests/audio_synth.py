@@ -9,7 +9,7 @@ Whisper's transcript. The slow test (tests/test_audio_edits.py) uses real text-t
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -24,12 +24,26 @@ def norm_word(text: str) -> str:
     return text.strip(".").lower()
 
 
-def _syllable(rng, sr: int, dur: float, level_db: float) -> np.ndarray:
+@dataclass
+class Voice:
+    """A speaker: a base pitch (Hz) and a formant scale (vocal tract length)."""
+    f0: float = 125.0
+    formants: float = 1.0
+
+
+VOICE_A = Voice(120.0, 1.0)         # a lower voice
+VOICE_B = Voice(215.0, 1.17)        # a clearly different, higher voice
+
+
+def _syllable(rng, sr: int, dur: float, level_db: float, voice: Voice | None = None) -> np.ndarray:
+    voice = voice or VOICE_A
     n = int(dur * sr)
     t = np.arange(n) / sr
-    f0 = rng.uniform(95, 210) * (1 + rng.uniform(-0.12, 0.12) * t / max(dur, 1e-3))
+    base = voice.f0 * 2 ** (rng.uniform(-2, 2) / 12)                # intonation: +-2 semitones
+    f0 = base * (1 + rng.uniform(-0.06, 0.06) * t / max(dur, 1e-3))
     phase = 2 * np.pi * np.cumsum(f0) / sr
-    formants = [(rng.uniform(280, 850), 90), (rng.uniform(900, 2400), 140), (rng.uniform(2400, 3400), 220)]
+    k = voice.formants
+    formants = [(rng.uniform(280, 850) * k, 90), (rng.uniform(900, 2400) * k, 140), (rng.uniform(2400, 3400) * k, 220)]
     out = np.zeros(n)
     for h in range(1, 40):
         fh = f0.mean() * h
@@ -51,6 +65,8 @@ def _syllable(rng, sr: int, dur: float, level_db: float) -> np.ndarray:
 
 
 def room_tone(rng, n: int, level_db: float, tilt: float = 0.97) -> np.ndarray:
+    if n <= 0:
+        return np.zeros(0)
     white = rng.standard_normal(n)
     pink = np.empty(n)
     acc = 0.0
@@ -71,7 +87,7 @@ class Speech:
 
 
 def make_speech(seed: int = 1, n_sentences: int = 8, words_per_sentence=(5, 9), level_db: float = -20.0,
-                room_db: float = -58.0, sr: int = SR) -> Speech:
+                room_db: float = -58.0, sr: int = SR, voice: Voice | None = None) -> Speech:
     rng = np.random.default_rng(seed)
     parts, words, sentences, t = [], [], [], 0.0
 
@@ -89,7 +105,7 @@ def make_speech(seed: int = 1, n_sentences: int = 8, words_per_sentence=(5, 9), 
             text = next(v for v in (VOCAB[int(i)] for i in rng.permutation(len(VOCAB))) if v not in recent)
             start = t
             for _syl in range(int(rng.integers(1, 3))):
-                syl = _syllable(rng, sr, rng.uniform(0.13, 0.27), level_db + rng.uniform(-3, 3))
+                syl = _syllable(rng, sr, rng.uniform(0.13, 0.27), level_db + rng.uniform(-3, 3), voice)
                 parts.append(syl)
                 t += len(syl) / sr
                 silence(rng.uniform(0.0, 0.02))
@@ -220,3 +236,217 @@ class Planter:
         self.speech = new
         self.truth.append((kind, at))
         return at
+
+
+# --- a whole E2CL-style episode: two voices, music, effects, a stinger ----------------------------------------
+
+def tone_chord(rng, sr: int, dur: float, freqs, level_db: float) -> np.ndarray:
+    """Notes with a few harmonics and a soft attack: sustained, tonal, like a pad or guitar chord."""
+    n = int(dur * sr)
+    t = np.arange(n) / sr
+    out = np.zeros(n)
+    for f in freqs:
+        for h, amp in ((1, 1.0), (2, 0.45), (3, 0.25), (4, 0.12)):
+            out += amp * np.sin(2 * np.pi * f * h * t + rng.uniform(0, 2 * np.pi))
+    env = np.minimum(1.0, t / 0.04) * np.exp(-t / (dur * 2.5))
+    out *= env
+    return out / (np.sqrt(np.mean(out ** 2)) + 1e-9) * 10 ** (level_db / 20)
+
+
+def music(seed: int, dur: float, level_db: float, sr: int = SR, bpm: float = 104.0) -> np.ndarray:
+    """A loop: a chord every two beats over a kick drum on every beat and a hi-hat between."""
+    rng = np.random.default_rng(seed)
+    n = int(dur * sr)
+    out = np.zeros(n)
+    beat = 60.0 / bpm
+    chords = [(220.0, 277.2, 329.6), (196.0, 246.9, 293.7), (174.6, 220.0, 261.6), (196.0, 246.9, 329.6)]
+    k, t = 0, 0.0
+    while t < dur:
+        a = int(t * sr)
+        piece = tone_chord(rng, sr, min(2 * beat, dur - t), chords[k % len(chords)], level_db)
+        out[a:a + len(piece)] += piece[:n - a]
+        k, t = k + 1, t + 2 * beat
+    t = 0.0
+    while t < dur:
+        a = int(t * sr)
+        m = min(int(0.15 * sr), n - a)
+        tt = np.arange(m) / sr
+        out[a:a + m] += np.sin(2 * np.pi * 60 * tt) * np.exp(-tt / 0.05) * 10 ** ((level_db + 4) / 20) * 1.4
+        h = int((t + beat / 2) * sr)
+        if h + int(0.03 * sr) < n:
+            hm = int(0.03 * sr)
+            out[h:h + hm] += rng.standard_normal(hm) * np.exp(-np.arange(hm) / (0.008 * sr)) * 10 ** ((level_db - 6) / 20)
+        t += beat
+    return out.astype(np.float32)
+
+
+def sfx_hit(seed: int, level_db: float = -12.0, sr: int = SR) -> np.ndarray:
+    """An impact: a low thump and a noise crack, both dying away within ~0.3 s."""
+    rng = np.random.default_rng(seed)
+    m = int(0.45 * sr)
+    t = np.arange(m) / sr
+    thump = np.sin(2 * np.pi * 70 * t) * np.exp(-t / 0.06)
+    crack = rng.standard_normal(m) * np.exp(-t / 0.025)
+    out = thump + 0.6 * crack
+    return (out / np.max(np.abs(out)) * 10 ** (level_db / 20) * 1.4).astype(np.float32)
+
+
+def stinger(seed: int = 77, sr: int = SR) -> np.ndarray:
+    """The client's jingle: a quick rising arpeggio of bell-like notes, 1.6 s (a reference file)."""
+    rng = np.random.default_rng(seed)
+    notes = [523.3, 659.3, 784.0, 1046.5, 784.0, 1046.5]
+    out = np.zeros(int(1.6 * sr))
+    for k, f in enumerate(notes):
+        a = int(k * 0.2 * sr)
+        m = len(out) - a
+        t = np.arange(m) / sr
+        tone = sum(amp * np.sin(2 * np.pi * f * h * t + rng.uniform(0, 6.28)) for h, amp in ((1, 1), (2.76, 0.4), (5.4, 0.2)))
+        out[a:] += tone * np.exp(-t / 0.35)
+    return (out / np.max(np.abs(out)) * 0.3).astype(np.float32)
+
+
+@dataclass
+class Episode:
+    samples: np.ndarray
+    words: list[SpokenWord]
+    sentences: list[tuple[int, int]]           # word index ranges
+    intentional: list[tuple[float, float, str]] # (start, end, what): music, sfx, stinger, overlap, echo
+    turns: list[float]                          # times where the voice changes
+    reference: np.ndarray                       # the stinger as the client's reference file
+    spans: list[tuple[float, float]] = field(default_factory=list)   # each of the 10 sentences, in seconds
+    sr: int = SR
+
+    def word_in(self, words, k: int, offset: int = 0) -> int:
+        """The index (in `words`) of the offset-th word of sentence k, found by time."""
+        a, b = self.spans[k]
+        inside = [i for i, w in enumerate(words) if a - 0.01 <= w.start < b and w.probability > 0.5]
+        return inside[offset]
+
+    @property
+    def speech(self) -> Speech:
+        return Speech(self.samples, self.words, self.sentences, self.sr)
+
+
+def make_episode(seed: int = 1, intro: bool = True, outro: bool = True, bed: bool = True, sfx: bool = True,
+                 sting: bool = True, two_voices: bool = True, overlap: bool = True, echo: bool = True,
+                 lyrics: bool = True) -> Episode:
+    """A clean E2CL-style episode: 10 sentences, alternating voices A and B in different rooms (B's
+    room is 8 dB noisier), with a music intro and outro, a music bed under sentences 6-7, an SFX hit
+    and the client's stinger in pauses, B talking over the end of sentence 3, A echoing B's last
+    word after sentence 1 ("exactly. exactly"), and B answering sentence 4 with no pause at all.
+    The transcript stands in for Whisper: crosstalk gives colliding, unsure words; words written
+    over the intro music are unsure "la la la" lyrics. Every one of these is intentional: no flags."""
+    rng = np.random.default_rng(seed)
+    sr = SR
+    parts: list[np.ndarray] = []
+    words: list[SpokenWord] = []
+    sentences, intentional, turns, spans = [], [], [], []
+    t = 0.0
+
+    def add(x):
+        nonlocal t
+        parts.append(np.asarray(x, np.float64))
+        t += len(x) / sr
+
+    def pause(sec, room_db):
+        add(room_tone(rng, int(sec * sr), room_db))
+
+    room = {0: -58.0, 1: -50.0}
+    voices = [VOICE_A, VOICE_B] if two_voices else [VOICE_A, VOICE_A]
+    pause(0.4, room[0])
+    if intro:
+        start = t
+        add(music(seed + 1, 6.0, -18.0) + room_tone(rng, int(6.0 * sr), room[0]))
+        intentional.append((start, t, "music intro"))
+        if lyrics:
+            for k in range(4):
+                words.append(SpokenWord("la", round(start + 1.0 + 0.6 * k, 3), round(start + 1.3 + 0.6 * k, 3), 0.3))
+        pause(0.5, room[0])
+    for k in range(10):
+        who = k % 2
+        voice, rd = voices[who], room[who if two_voices else 0]
+        if k > 0 and voices[who] is not voices[(k - 1) % 2]:
+            turns.append(t)
+        first = len(words)
+        count = int(rng.integers(6, 9))
+        for i in range(count):
+            recent = {w.text.strip(".") for w in words[-4:]}           # no word, and so no phrase, repeats by chance
+            text = next(v for v in (VOCAB[int(j)] for j in rng.permutation(len(VOCAB))) if v not in recent)
+            ws = t
+            for _ in range(int(rng.integers(1, 3))):
+                syl = _syllable(rng, sr, rng.uniform(0.13, 0.27), -20.0 + rng.uniform(-3, 3), voice)
+                add(syl + room_tone(rng, len(syl), rd))
+                pause(rng.uniform(0.0, 0.02), rd)
+            last = i == count - 1
+            text = ("exactly" if (echo and k == 1 and last) else text) + ("." if last else "")
+            words.append(SpokenWord(text, round(ws, 3), round(t, 3), 0.95))
+            if not last:
+                pause(rng.uniform(0.05, 0.13), rd)
+        sentences.append((first, len(words)))
+        spans.append((words[first].start, words[-1].end))
+        if echo and k == 1 and two_voices:              # B said it; A echoes "exactly" straight away: not a stutter
+            pause(0.15, room[0])
+            turns.append(t)
+            ws = t
+            for _ in range(2):
+                syl = _syllable(rng, sr, 0.18, -20.0, VOICE_A)
+                add(syl + room_tone(rng, len(syl), room[0]))
+            words.append(SpokenWord("exactly.", round(ws, 3), round(t, 3), 0.9))
+            intentional.append((ws - 0.6, t, "echo by the other speaker"))
+        if k == 4 and two_voices:                      # B answers with no pause at all: a turn, not a cut
+            pause(0.04, rd)
+            continue
+        if k == 2 and sting:
+            pause(0.4, rd)
+            start = t
+            add(stinger() + room_tone(rng, int(1.6 * sr), rd))
+            intentional.append((start, t, "stinger"))
+            pause(0.4, rd)
+            continue
+        if k == 8 and sfx:
+            pause(0.4, rd)
+            start = t
+            hit = sfx_hit(seed + 3)
+            add(hit + room_tone(rng, len(hit), rd))
+            intentional.append((start, t, "sfx hit"))
+            pause(0.4, rd)
+            continue
+        pause(rng.uniform(0.5, 0.75), rd)
+    if outro:
+        start = t
+        add(music(seed + 2, 6.0, -18.0) + room_tone(rng, int(6.0 * sr), room[1 if two_voices else 0]))
+        intentional.append((start, t, "music outro"))
+    pause(0.4, room[0])
+    x = np.concatenate(parts)
+
+    if bed:                                            # a music bed under sentences 6 and 7
+        a = words[sentences[6][0]].start - 0.3
+        b = words[sentences[7][1] - 1].end + 0.3
+        ia, ib = int(a * sr), int(b * sr)
+        x[ia:ib] += music(seed + 4, (ib - ia) / sr, -34.0)[:ib - ia]
+        intentional.append((a, b, "music bed under speech"))
+    if overlap and two_voices:                         # B talks over the end of sentence 3
+        i, j = sentences[3]
+        a = words[j - 3].start
+        piece = np.concatenate([_syllable(rng, sr, 0.22, -21.0, VOICE_B) for _ in range(4)])
+        ia = int(a * sr)
+        x[ia:ia + len(piece)] += piece[:len(x) - ia]
+        b = a + len(piece) / sr
+        # Whisper in crosstalk: both voices' words, unsure, with colliding times.
+        words = [SpokenWord(w.text, w.start, w.end, 0.35) if a - 0.1 <= w.start <= b else w for w in words]
+        words += [SpokenWord("yeah", round(a + 0.05, 3), round(a + 0.4, 3), 0.3),
+                  SpokenWord("exactly", round(a + 0.3, 3), round(a + 0.8, 3), 0.25)]
+        words.sort(key=lambda w: w.start)
+        sentences = _reindex(words, sentences)
+        intentional.append((a, b, "crosstalk"))
+    return Episode(x.astype(np.float32), words, sentences, intentional, turns, stinger(), spans, sr)
+
+
+def _reindex(words, sentences):
+    """Sentence ranges again after words were added: a sentence ends at each word ending in "."."""
+    out, start = [], 0
+    for i, w in enumerate(words):
+        if w.text.endswith("."):
+            out.append((start, i + 1))
+            start = i + 1
+    return out

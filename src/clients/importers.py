@@ -32,7 +32,17 @@ TEMPLATE_SHEETS: dict[str, list[str]] = {
     "Exceptions": ["Type", "Text", "Video", "Time", "Note"],
     "Examples": ["Wrong", "Correct", "Category", "Note"],
     "Checks": ["Check", "Setting", "Value", "Note"],
+    "Audio guidelines": ["Setting", "Value", "Help"],
 }
+# Podcasts only: left empty, nothing is imported (a caption-only client gets no audio guidelines).
+_GUIDE_ROWS = [
+    ("music_allowed", "", "where music is placed on purpose (never flagged there): intro, outro, transitions, "
+                          "ad_breaks, under_speech (comma-separated)"),
+    ("sfx_allowed", "", "where sound effects are placed on purpose: transitions, stingers, emphasis"),
+    ("reference_folder", "", "folder with the client's stingers, jingles, beds and effects (recognized in each episode)"),
+    ("sensitivity", "", "strict / normal / lenient: how much around each music or effect is ignored (0.15 / 0.3 / 0.6 s)"),
+    ("required_cues.enabled", "", "yes = report a required cue that's missing (list them in the client file)"),
+]
 INFO_FIELDS = {
     "client code": "code", "code": "code",
     "display name": "name", "name": "name",
@@ -80,6 +90,11 @@ def make_template(path: Path) -> Path:
             cell.font, cell.fill = bold, fill
         if name == "Info":
             for row in _INFO_ROWS:
+                ws.append(list(row))
+            for row in ws.iter_rows(min_row=2, min_col=3, max_col=3):
+                row[0].font = grey
+        elif name == "Audio guidelines":
+            for row in _GUIDE_ROWS:
                 ws.append(list(row))
             for row in ws.iter_rows(min_row=2, min_col=3, max_col=3):
                 row[0].font = grey
@@ -191,6 +206,25 @@ def import_template(wb, source: str) -> list[Finding]:
     if "checks" in sheets:
         for n, (check, setting, value, note, *_rest) in enumerate(_template_rows(sheets["checks"])):
             out += _check_row(check.lower(), setting, value, note, where("Checks", n))
+    if "audio guidelines" in sheets:
+        from src.clients.model import _scalar
+
+        for n, (setting, value, *_rest) in enumerate(_template_rows(sheets["audio guidelines"])):
+            setting = setting.strip()
+            if not setting or not str(value).strip():
+                continue
+            if setting in ("music_allowed", "sfx_allowed"):
+                parsed = [x.strip().lower().replace(" ", "_") for x in re.split(r"[,;]", value) if x.strip()]
+            elif setting == "reference_folder":
+                if not value:
+                    continue
+                parsed = value
+            elif setting == "sensitivity":
+                parsed = (value or "normal").strip().lower()
+            else:
+                parsed = _scalar(value)
+            out.append(Finding("check", {"setting": f"audio_guidelines.{setting}", "value": parsed},
+                               where("Audio guidelines", n)))
     return out
 
 

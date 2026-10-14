@@ -45,7 +45,8 @@ ABRUPT_CUT = "abrupt_cut"
 JUMP_CUT = "jump_cut"
 DEAD_AIR = "dead_air"
 FILLER = "filler"
-AUDIO_ISSUES = {STUTTER, REPEATED_PHRASE, ABRUPT_CUT, JUMP_CUT, DEAD_AIR, FILLER}
+MISSING_CUE = "missing_cue"          # a cue the client's audio guidelines require isn't there (off by default)
+AUDIO_ISSUES = {STUTTER, REPEATED_PHRASE, ABRUPT_CUT, JUMP_CUT, DEAD_AIR, FILLER, MISSING_CUE}
 
 # Issues that aren't about a caption have negative caption ids: -1, -2... for speech with no
 # caption, -1001, -1002... for shot 1, 2... of the color checks, -3001, -3002... for audio issues.
@@ -119,6 +120,7 @@ class Issue:
     message: str
     suggestion: str = ""
     confidence: float = 1.0
+    signals: str = ""     # what the flag rests on (audio checks: each piece of evidence and its weight)
 
     def __post_init__(self) -> None:
         if self.severity not in SEVERITIES:

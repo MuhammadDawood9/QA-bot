@@ -269,6 +269,7 @@ class MascotWindow(QWidget):
     moved_by_user = Signal(QPoint)
     clicked = Signal()                    # a left click that wasn't a drag
     files_dropped = Signal(list)          # list[Path] of the video files dropped on it
+    cue_sheets_dropped = Signal(list, list)   # (media, .csv files) dropped together: cue sheets for episodes
 
     def __init__(self, settings: Settings, skin: Skin | None = None):
         super().__init__(None, platform.floating_window_flags())
@@ -602,9 +603,13 @@ class MascotWindow(QWidget):
     def dropEvent(self, event) -> None:
         self.glow.drop_hover = False
         self.glow.update()
-        videos = videos_in(self._dropped_paths(event))
+        paths = self._dropped_paths(event)
+        videos = videos_in(paths)
         if videos and self.hit(self._drop_point(event)):
             event.acceptProposedAction()
+            csvs = [p for p in paths if p.suffix.lower() == ".csv" and p.is_file()]
+            if csvs:
+                self.cue_sheets_dropped.emit(videos, csvs)     # remembered before the checks start
             self.files_dropped.emit(videos)
         else:
             event.ignore()

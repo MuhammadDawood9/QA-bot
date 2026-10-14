@@ -18,14 +18,15 @@ from typing import Callable
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
-                               QHBoxLayout, QLabel, QLineEdit, QListWidget, QMessageBox, QPlainTextEdit, QPushButton,
-                               QSlider, QSpinBox, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
+                               QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QMessageBox,
+                               QPlainTextEdit, QPushButton, QSlider, QSpinBox, QTreeWidget, QTreeWidgetItem,
+                               QVBoxLayout, QWidget)
 
 from src.clients.importers import IMPORT_EXTENSIONS, claude_allowed, import_file, pdf_text, read_with_claude
-from src.clients.model import (KINDS, LANGUAGES, ClientError, Finding, area_text, build_client, clean_code,
-                               finding_text, findings_from_client, merge_findings, parse_area, parse_finding_text,
-                               SINGLE_KINDS)
+from src.clients.model import (GUIDE_SENSITIVITIES, KINDS, LANGUAGES, MUSIC_PLACES, SFX_PLACES, ClientError,
+                               Finding, area_text, build_client, clean_code, finding_text, findings_from_client,
+                               merge_findings, parse_area, parse_finding_text, SINGLE_KINDS)
 from src.clients.store import ClientStore
 
 log = logging.getLogger("qcbot.app")
@@ -136,6 +137,7 @@ class ClientDialog(QDialog):
         form.addRow("Minimum words per caption:", self.min_words)
         form.addRow("Caption area:", area_row)
         form.addRow("Notes:", self.notes)
+        self.guides = self._guidelines_box(current, config)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         review = buttons.addButton("Review and save...", QDialogButtonBox.ButtonRole.AcceptRole)
@@ -145,6 +147,7 @@ class ClientDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
+        layout.addWidget(self.guides)
         layout.addWidget(QLabel("<b>Optional files</b> (client template .xlsx, QC review workbook .xlsx, .csv, "
                                 "style guide .pdf). They're read on this PC; you see everything found before "
                                 "anything is saved."))
@@ -177,6 +180,61 @@ class ClientDialog(QDialog):
         if dialog.frames_loaded and dialog.exec() == QDialog.DialogCode.Accepted and dialog.region is not None:
             self.area.setText(area_text(dialog.region))
             self.touched.add("caption_area")
+
+    def _guidelines_box(self, current: dict, config: dict) -> QGroupBox:
+        """Podcast audio guidelines: where music and effects are placed on purpose, the client's
+        reference audio, and how wide the ignored windows are. Saved only when ticked."""
+        g = {**(config.get("audio_guidelines") or {}), **(current.get("audio_guidelines") or {})}
+        box = QGroupBox("Podcast audio guidelines (music and sound effects placed on purpose)")
+        box.setCheckable(True)
+        box.setChecked(bool(current.get("audio_guidelines") or current.get("audio")))
+        self.music = {p: QCheckBox(p.replace("_", " ")) for p in MUSIC_PLACES}
+        self.sfx = {p: QCheckBox(p) for p in SFX_PLACES}
+        for places, boxes in ((g.get("music_allowed") or [], self.music), (g.get("sfx_allowed") or [], self.sfx)):
+            for p, cb in boxes.items():
+                cb.setChecked(p in places)
+        self.reference = QLineEdit(str(g.get("reference_folder") or ""))
+        self.reference.setPlaceholderText("folder with the client's stingers, jingles, beds and effects")
+        browse = QPushButton("Choose...")
+        browse.clicked.connect(lambda: self._choose_reference())
+        self.guide_sensitivity = QComboBox()
+        for key in GUIDE_SENSITIVITIES:
+            self.guide_sensitivity.addItem(key, key)
+        self.guide_sensitivity.setCurrentIndex(max(0, self.guide_sensitivity.findData(g.get("sensitivity", "normal"))))
+        form = QFormLayout(box)
+        for label, boxes in (("Music allowed:", self.music), ("Effects allowed:", self.sfx)):
+            row = QHBoxLayout()
+            for cb in boxes.values():
+                row.addWidget(cb)
+            row.addStretch(1)
+            form.addRow(label, row)
+        ref_row = QHBoxLayout()
+        ref_row.addWidget(self.reference, 1)
+        ref_row.addWidget(browse)
+        form.addRow("Reference audio:", ref_row)
+        form.addRow("Ignore around them:", self.guide_sensitivity)
+        return box
+
+    def _choose_reference(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "The client's reference audio", self.reference.text()
+                                                  or self.last_folder)
+        if folder:
+            self.reference.setText(str(Path(folder)))
+
+    def guideline_findings(self) -> list[Finding]:
+        if not self.guides.isChecked():
+            return []
+        src = "typed in the dialog"
+        out = [Finding("check", {"setting": "audio_guidelines.music_allowed",
+                                 "value": [p for p, cb in self.music.items() if cb.isChecked()]}, src),
+               Finding("check", {"setting": "audio_guidelines.sfx_allowed",
+                                 "value": [p for p, cb in self.sfx.items() if cb.isChecked()]}, src),
+               Finding("check", {"setting": "audio_guidelines.sensitivity",
+                                 "value": self.guide_sensitivity.currentData()}, src)]
+        if self.reference.text().strip():
+            out.append(Finding("check", {"setting": "audio_guidelines.reference_folder",
+                                         "value": self.reference.text().strip()}, src))
+        return out
 
     def typed_findings(self) -> list[Finding]:
         src = "typed in the dialog"
@@ -212,6 +270,7 @@ class ClientDialog(QDialog):
             QMessageBox.warning(self, "Video QC Bot", "Some files couldn't be read and were left out:\n\n"
                                 + "\n".join(problems))
         first_typed = [f for f in typed if f.kind in self.touched or f.kind == "code" or self.editing]
+        first_typed += self.guideline_findings()
         later_typed = [f for f in typed if f not in first_typed]
         rest = [f for f in self.current_findings if f.kind not in SINGLE_KINDS]
         findings = merge_findings(first_typed, rest, imported, later_typed)

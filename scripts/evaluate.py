@@ -5,6 +5,8 @@
     python scripts/evaluate.py --videos "D:/QC videos" --tolerance 2
     python scripts/evaluate.py --checks captions        # only the caption checks (or: color, audio)
     python scripts/evaluate.py --checks audio --audio-tolerance 1.5      # podcasts (E2CL)
+    python scripts/evaluate.py --checks audio --compare-suppression      # and again without the overlap /
+                                                                           # music / effect suppression
 
 data/ground_truth.csv columns: video, timestamp, client, issue_type, note_text
   video       the video's file name (looked up under --videos, recursively) or a full path
@@ -237,8 +239,9 @@ def caption_flags(video: Path, client_code: str, config: dict) -> tuple[list[Fla
     return flags, length, took
 
 
-def audio_flags(path: Path, client_code: str, config: dict) -> tuple[list[Flag], float, float]:
-    """The audio-edit issues for one podcast (or video), each a moment."""
+def audio_flags(path: Path, client_code: str, config: dict, overrides: dict | None = None) -> tuple[list[Flag], float, float]:
+    """The audio-edit issues for one podcast (or video), each a moment. overrides: laid over the
+    client's audio settings (e.g. {"suppression": False})."""
     from src.engine import QCError, QCOptions, audio_settings, run_qc
     from src.config import load_client
 
@@ -247,7 +250,8 @@ def audio_flags(path: Path, client_code: str, config: dict) -> tuple[list[Flag],
     if not audio_settings(config, client, audio_only=True).get("enabled"):
         print(f"  {path.name}: the audio checks are off for client {client_code or 'default'}")
     try:
-        result = run_qc(path, client_code or None, options=QCOptions(use_llm=False, check_color=False), config=config)
+        result = run_qc(path, client_code or None, config=config,
+                        options=QCOptions(use_llm=False, check_color=False, audio_overrides=overrides or {}))
     except QCError as exc:
         print(f"  {path.name}: audio not checked: {exc}")
         return [], 0.0, 0.0
@@ -489,6 +493,45 @@ def make_template(xlsx: Path, out: Path) -> int:
     return 0
 
 
+def compare_suppression(report: Path, rows: list[dict], notes: list[Note], by_video: dict, folders: list[Path],
+                        config: dict, tolerance: float, minutes: float) -> None:
+    """The audio rows again with suppression off; a before/after table in evaluation.md and on screen."""
+    from dataclasses import replace
+
+    fresh = [replace(n, matched_by=[]) for n in notes]
+    flags: list[Flag] = []
+    for name, video_notes in by_video.items():
+        path = find_video(name, folders)
+        if path is None or not any(n.area == "audio" for n in video_notes) and path.suffix.lower() not in {
+                ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}:
+            continue
+        client = next((n.client for n in video_notes if n.client), "")
+        print(f"checking {path.name} again with the suppression off...")
+        found, _, _ = audio_flags(path, client, config, {"suppression": False})
+        match([n for n in fresh if n.video == name], found, 2.0, tolerance)
+        flags += found
+    off = {r["type"]: r for r in score(fresh, flags, minutes) if r["area"] == "audio"}
+    on = {r["type"]: r for r in rows if r["area"] == "audio"}
+    lines = ["", "## Audio: with and without the suppression", "",
+             "Suppression: overlap zones, music, effects and the client's cues are left alone; room tone and "
+             "level changes count only with stronger evidence; repeats by a different voice are not stutters.", "",
+             "| Check | Notes | Recall off | Recall on | Flags off | Flags on | Precision off | Precision on | "
+             "False alarms/min off | on |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    print(f"\n{'audio check':<16}{'notes':>6}{'recall off':>11}{'on':>6}{'flags off':>10}{'on':>5}"
+          f"{'precision off':>14}{'on':>6}")
+    for kind in AUDIO_TYPES + [ALL_AUDIO]:
+        a, b = off.get(kind), on.get(kind)
+        if not a or not b or not (a["notes"] or a["flags"] or b["flags"]):
+            continue
+        fp = lambda r: "n/a" if r["fp_per_min"] is None else f"{r['fp_per_min']:.2f}"     # noqa: E731
+        lines.append(f"| {kind} | {a['notes']} | {pct(a['recall'])} | {pct(b['recall'])} | {a['flags']} | {b['flags']} | "
+                     f"{pct(a['precision'])} | {pct(b['precision'])} | {fp(a)} | {fp(b)} |")
+        print(f"{kind:<16}{a['notes']:>6}{pct(a['recall']):>11}{pct(b['recall']):>6}{a['flags']:>10}{b['flags']:>5}"
+              f"{pct(a['precision']):>14}{pct(b['precision']):>6}")
+    with report.open("a", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(lines) + "\n")
+
+
 # --- main -----------------------------------------------------------------------------------
 
 def main(argv=None) -> int:
@@ -502,6 +545,9 @@ def main(argv=None) -> int:
     parser.add_argument("--checks", choices=("all", "captions", "color", "audio"), default="all",
                         help="which checks to evaluate (captions and audio run speech recognition: slower)")
     parser.add_argument("--audio-tolerance", type=float, default=1.5, help="seconds either side of an audio flag")
+    parser.add_argument("--compare-suppression", action="store_true",
+                        help="also run the audio checks with the overlap / music / effect suppression off, and "
+                             "compare recall and precision")
     parser.add_argument("--make-template", action="store_true",
                         help="write a draft ground_truth.csv (and the list of videos to collect) from the QC "
                              "spreadsheet")
@@ -555,6 +601,8 @@ def main(argv=None) -> int:
     folder = Path(config["_root"]) / config.get("report", {}).get("output_dir", "reports") / \
         f"evaluation_{dt.datetime.now():%Y%m%d-%H%M%S}"
     report = write_outputs(folder, rows, evaluated, all_flags, videos, problems, args.tolerance, args.audio_tolerance)
+    if args.compare_suppression and "audio" in wanted:
+        compare_suppression(report, rows, evaluated, by_video, folders, config, args.audio_tolerance, minutes)
 
     print()
     print(f"{'check':<16}{'notes':>6}{'found':>6}{'recall':>8}{'flags':>7}{'true':>6}{'precision':>11}{'FP/min':>8}")

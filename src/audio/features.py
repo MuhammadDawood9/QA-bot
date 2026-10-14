@@ -98,6 +98,18 @@ def band_db(x: np.ndarray, sr: int, hop_sec: float = 0.02, win_sec: float = 0.04
     return np.concatenate(out) if out else np.zeros((0, len(edges)), np.float32)
 
 
+def spectral_flatness(x: np.ndarray, sr: int, hop_sec: float = 0.02, win_sec: float = 0.04) -> np.ndarray:
+    """Per frame, geometric over arithmetic mean of the power spectrum (60 Hz-7 kHz): ~0 for a
+    tone or music with clear notes, higher for noise; speech in between, crosstalk flatter."""
+    out = []
+    for spec, n_fft in power_spectrum(x, sr, hop_sec, win_sec):
+        freqs = np.fft.rfftfreq(n_fft, 1.0 / sr)
+        sel = (freqs >= 60) & (freqs <= min(7000, sr / 2))
+        p = spec[:, sel] + 1e-12
+        out.append(np.exp(np.mean(np.log(p), axis=1)) / np.mean(p, axis=1))
+    return np.concatenate(out) if out else np.zeros(0, np.float32)
+
+
 def _unit(rows: np.ndarray) -> np.ndarray:
     return rows / (np.linalg.norm(rows, axis=1, keepdims=True) + EPS)
 

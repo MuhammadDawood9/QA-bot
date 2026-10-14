@@ -54,7 +54,12 @@ LANGUAGES = {"en": "English", "es": "Spanish", "fr": "French", "de": "German", "
 COLOR_TYPES = ("overexposed", "underexposed", "crushed_blacks", "flat_contrast", "saturation", "color_cast",
                "skin_tone", "shot_mismatch")
 CHECK_NAMES = ("too_short", "spelling", "capitalization", "spacing", "punctuation", "transcript", "screen_text",
-               "audio")
+               "audio", "audio_guidelines")
+MUSIC_PLACES = ("intro", "outro", "transitions", "ad_breaks", "under_speech")
+SFX_PLACES = ("transitions", "stingers", "emphasis")
+GUIDE_SENSITIVITIES = ("strict", "normal", "lenient")
+# Top-level blocks of the client file that "check" settings with this prefix are written to (not overrides).
+OWN_BLOCKS = ("audio", "audio_guidelines")
 EXCEPTION_FIELDS = ("type", "text", "video", "at", "note")
 # Where a caption sits, as a region of the frame (fractions); PDFs and the template may name one.
 AREA_PRESETS = {
@@ -228,6 +233,13 @@ def validate_finding(f: Finding) -> None:
         head = str(v["setting"]).split(".")[0]
         if head not in CHECK_NAMES:
             raise ClientError(f"Check setting {v['setting']!r}: starts with a check name ({', '.join(CHECK_NAMES)}).")
+        if v["setting"] == "audio_guidelines.sensitivity" and v["value"] not in GUIDE_SENSITIVITIES:
+            raise ClientError(f"Audio guidelines sensitivity: one of {', '.join(GUIDE_SENSITIVITIES)}.")
+        for name, places in (("music_allowed", MUSIC_PLACES), ("sfx_allowed", SFX_PLACES)):
+            if v["setting"] == f"audio_guidelines.{name}":
+                bad = [x for x in (v["value"] or []) if x not in places]
+                if not isinstance(v["value"], list) or bad:
+                    raise ClientError(f"Audio guidelines {name}: a list of {', '.join(places)}.")
     if f.kind in ("rule", "glossary", "forced", "note") and not str(v).strip():
         raise ClientError(f"{KINDS[f.kind]}: empty.")
     if f.kind == "glossary" and "\n" in str(v):
@@ -289,8 +301,9 @@ def findings_from_client(client: dict, color_block: dict | None = None) -> list[
         out.append(Finding("example", dict(ex), src))
     for setting, value in _flatten({k: v for k, v in overrides.items() if v not in ({}, None)}):
         out.append(Finding("check", {"setting": setting, "value": value}, src))
-    for setting, value in _flatten(client.get("audio") or {}, "audio."):      # the audio checks' own block
-        out.append(Finding("check", {"setting": setting, "value": value}, src))
+    for block in OWN_BLOCKS:                                       # the audio checks' own blocks
+        for setting, value in _flatten(client.get(block) or {}, block + "."):
+            out.append(Finding("check", {"setting": setting, "value": value}, src))
     color_block = dict(color_block or {})
     for kind in color_block.pop("skip", None) or []:
         out.append(Finding("color_skip", str(kind), src))
@@ -348,7 +361,7 @@ def build_client(findings: Iterable[Finding], base: dict | None = None, notes_te
         raise ClientError("Display name: required.")
 
     client = copy.deepcopy(base or {})
-    for key in ("rules", "glossary", "ignore", "examples", "overrides", "audio"):
+    for key in ("rules", "glossary", "ignore", "examples", "overrides", *OWN_BLOCKS):
         client.pop(key, None)
     client["client"] = code
     client["name"] = str(singles["name"].value).strip()
@@ -364,12 +377,13 @@ def build_client(findings: Iterable[Finding], base: dict | None = None, notes_te
               for f in kept if f.kind == "exception"]
     examples = [{k: v for k, v in f.value.items() if v not in (None, "")} for f in kept if f.kind == "example"]
     overrides: dict = {}
-    audio: dict = {}
+    own: dict = {block: {} for block in OWN_BLOCKS}
     for f in kept:
         if f.kind == "check":
             setting = f.value["setting"]
-            if setting.startswith("audio."):          # the client file's "audio:" block, not "overrides:"
-                _set_path(audio, setting[len("audio."):], f.value["value"])
+            block = setting.split(".", 1)[0]
+            if block in OWN_BLOCKS and "." in setting:  # the client file's own block, not "overrides:"
+                _set_path(own[block], setting[len(block) + 1:], f.value["value"])
             else:
                 _set_path(overrides, setting, f.value["value"])
     if "min_words" in singles:
@@ -379,8 +393,9 @@ def build_client(findings: Iterable[Finding], base: dict | None = None, notes_te
         if value:
             client[key] = value
     client["overrides"] = overrides
-    if audio:
-        client["audio"] = audio
+    for block in OWN_BLOCKS:
+        if own[block]:
+            client[block] = own[block]
 
     ocr = dict(client.get("ocr") or {})
     area = singles.get("caption_area")
@@ -406,7 +421,7 @@ def build_client(findings: Iterable[Finding], base: dict | None = None, notes_te
 
 
 _ORDER = ("client", "name", "project", "language", "notes", "rules", "glossary", "examples", "ignore", "overrides",
-          "ocr", "color", "audio")
+          "ocr", "color", "audio", "audio_guidelines")
 
 
 def _ordered(client: dict) -> dict:

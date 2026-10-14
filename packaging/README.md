@@ -66,7 +66,7 @@ downloaded from the internet or a chat may also get *"This file came from anothe
 the zip, choose *Properties*, and tick **Unblock** before unzipping. A code-signing certificate would
 remove these warnings.
 
-**Share it:** zip the `dist\VideoQCBot` folder. The other PC needs ffmpeg (`winget install ffmpeg`).
+**Share it:** zip the `dist\VideoQCBot` folder. ffmpeg is inside the app, so the other PC needs nothing else.
 
 ---
 

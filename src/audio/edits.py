@@ -32,9 +32,10 @@ from typing import Sequence
 
 import numpy as np
 
-from src.audio.features import band_db, cepstra, frame_db, lag_similarity, moving_mean, sequence_similarity
-from src.models import (ABRUPT_CUT, DEAD_AIR, FILLER, JUMP_CUT, REPEATED_PHRASE, STUTTER, Issue, SpokenWord,
-                        audio_issue_id)
+from src.audio.features import (band_db, cepstra, frame_db, lag_similarity, moving_mean, sequence_similarity,
+                                 spectral_flatness)
+from src.models import (ABRUPT_CUT, DEAD_AIR, FILLER, JUMP_CUT, MISSING_CUE, REPEATED_PHRASE, STUTTER, Issue,
+                        SpokenWord, audio_issue_id)
 from src.utils.timecode import format_timestamp
 
 HOP = 0.01                       # seconds per feature frame
@@ -87,6 +88,7 @@ class Finding:
     message: str
     suggestion: str
     evidence: list[str] = field(default_factory=list)
+    pair: tuple | None = None          # a repeat: (first, second) occurrence as SpokenWords spanning each
 
 
 def transcript_repeats(words: Sequence[SpokenWord], s: dict) -> list[Finding]:
@@ -123,7 +125,7 @@ def transcript_repeats(words: Sequence[SpokenWord], s: dict) -> list[Finding]:
             out.append(Finding(STUTTER, w.start, words[i + 1].end, 0.75,
                                f"Stutter: \"{w.text.strip()} {words[i + 1].text.strip()}\" (the word is started, "
                                f"then said again).", f"Cut the first \"{w.text.strip()}\".",
-                               ["transcript: restarted word"]))
+                               ["transcript: restarted word"], pair=(w, words[i + 1])))
             used.update((i, i + 1))
             continue
         for n in range(max_n, 0, -1):
@@ -138,10 +140,12 @@ def transcript_repeats(words: Sequence[SpokenWord], s: dict) -> list[Finding]:
                 break
             kind = STUTTER if n == 1 else REPEATED_PHRASE
             said = " ".join(x.text.strip() for x in words[i:i + 2 * n])
+            first = SpokenWord(phrase, words[i].start, words[i + n - 1].end, 1.0)
+            second = SpokenWord(phrase, words[i + n].start, words[i + 2 * n - 1].end, 1.0)
             out.append(Finding(kind, words[i].start, words[i + 2 * n - 1].end, 0.85 if n == 1 else 0.8,
                                f"{'Word' if n == 1 else 'Phrase'} said twice: \"{said}\".",
                                f"Cut one \"{' '.join(x.text.strip() for x in words[i:i + n])}\".",
-                               [f"transcript: {n}-word repeat"]))
+                               [f"transcript: {n}-word repeat"], pair=(first, second)))
             used.update(range(i, i + 2 * n))
             break
     return out
@@ -161,6 +165,8 @@ class Signal:
     floor: np.ndarray                  # 10 ms frames: the local noise floor, dBFS
     speech: np.ndarray                 # 10 ms frames: True where someone is (probably) talking
     cep_mean: np.ndarray | None = None  # the file's mean cepstrum (removed from cep)
+    flatness: np.ndarray = field(default_factory=lambda: np.zeros(0))   # 20 ms frames, spectral flatness
+    excluded: np.ndarray | None = None  # 20 ms frames left out of room tone measurements (music, effects)
 
     @property
     def duration(self) -> float:
@@ -188,7 +194,8 @@ def analyze(samples: np.ndarray, sr: int, s: dict) -> Signal:
         floor[start:start + block] = np.percentile(db[lo:hi], 10) if hi > lo else -100.0
     floor = np.maximum(floor, -100.0)
     speech = db > np.maximum(floor + float(s.get("speech_above_floor_db", 15.0)), float(s.get("speech_min_db", -50.0)))
-    return Signal(x, sr, db, cep, bands, band_level, floor, speech, cep_mean)
+    flatness = spectral_flatness(x, sr, 0.02, 0.04)
+    return Signal(x, sr, db, cep, bands, band_level, floor, speech, cep_mean, flatness)
 
 
 def speech_share(sig: Signal, start: float, end: float) -> float:
@@ -395,6 +402,8 @@ def _background(sig: Signal, start: float, end: float, min_sec: float = 0.4) -> 
         return None
     speech20 = sig.speech[::2][:len(sig.bands)]
     sel = ~speech20[a:b]
+    if sig.excluded is not None:                      # music under the pauses isn't the room
+        sel &= ~sig.excluded[a:b]
     if sel.sum() < max(8, int(float(min_sec) / 0.02)):
         return None
     return sig.bands[a:b][sel]
@@ -445,8 +454,28 @@ def cut_off_words(sig: Signal, words: Sequence[SpokenWord], s: dict) -> list[tup
             continue
         peak, tail = float(np.max(sig.db[a:b])), float(np.mean(sig.db[max(a, b - 2):b]))
         if tail >= peak - 6 and sig.speech[b - 1]:
-            out.append((w.end, 0.7, f"\"{w.text.strip()}\" is cut off mid-word"))
+            if _stops_dead(sig, w.end, float(s.get("dead_stop_db", 12.0))):
+                out.append((w.end, 1.0, f"\"{w.text.strip()}\" is cut off mid-word (it stops dead)"))
+            else:
+                out.append((w.end, 0.7, f"\"{w.text.strip()}\" is cut off mid-word"))
     return out
+
+
+def _stops_dead(sig: Signal, t: float, drop_db: float) -> bool:
+    """At 5 ms resolution: the level falls by drop_db within ~10 ms of t, from a sound that wasn't
+    already fading. Natural word endings, even on a "t" or "p", take longer than that."""
+    lo = max(0, int((t - 0.05) * sig.sr))
+    piece = sig.samples[lo:int((t + 0.05) * sig.sr)]
+    if len(piece) < int(0.06 * sig.sr):
+        return False
+    db = frame_db(piece, sig.sr, 0.005, 0.005)
+    k = int(round((t - lo / sig.sr) / 0.005))
+    if k < 4 or k + 3 > len(db):
+        return False
+    before = db[k - 4:k]
+    if before[-1] < before[0] - 3:                    # already fading out
+        return False
+    return float(before.max() - db[k:k + 3].min()) >= drop_db
 
 
 def spectral_jumps(sig: Signal, words: Sequence[SpokenWord], s: dict) -> list[tuple[float, float, str]]:
@@ -499,8 +528,30 @@ def missing_pauses(words: Sequence[SpokenWord], s: dict) -> list[tuple[float, fl
     return out
 
 
-def cut_points(sig: Signal, words: Sequence[SpokenWord], s: dict) -> list[Finding]:
-    """Candidate points with every signal found there, combined into one score per point."""
+# Evidence that, on its own, can make a cut. Room tone, loudness and timbre changes are weak: in a
+# mixed, multi-mic podcast they change at every turn, so they only add to a strong signal.
+STRONG_EVIDENCE = ("click", "stops with no fade", "digital silence", "it stops dead", "no pause between")
+AT_TURN_IGNORED = ("no pause between", "the sound changes abruptly", "background noise", "speech gets")
+
+
+def _strong(description: str) -> bool:
+    return any(k in description for k in STRONG_EVIDENCE)
+
+
+def _enough(group) -> bool:
+    """A cut needs a strong signal, or a cut-off word that another signal (not room tone or
+    level) agrees with: a timbre jump or a missing pause at the same point."""
+    if any(_strong(x[2]) for x in group):
+        return True
+    cut_word = any("cut off mid-word" in x[2] for x in group)
+    other = any(("sound changes abruptly" in x[2] or "no pause between" in x[2]) for x in group)
+    return cut_word and other
+
+
+def cut_points(sig: Signal, words: Sequence[SpokenWord], s: dict, regions=None, weak_rules: bool = True) -> list[Finding]:
+    """Candidate points with every signal found there, combined into one score per point.
+    weak_rules: room tone / loudness / timbre changes count only next to a strong signal, and at a
+    change of speaker only a click, a dead stop or a cut-off word counts."""
     signals: list[tuple[float, float, str, str]] = []          # (time, strength, description, family)
     w_click, w_edge = float(s.get("weight_click", 0.6)), float(s.get("weight_edge", 0.7))
     for t, strength in clicks(sig, s):
@@ -542,6 +593,12 @@ def cut_points(sig: Signal, words: Sequence[SpokenWord], s: dict) -> list[Findin
     out = []
     threshold = float(s.get("cut_score", 0.6))
     for g in groups:
+        if weak_rules and regions is not None and regions.speaker_change_near(g[0][0]):
+            g = [x for x in g if not any(k in x[2] for k in AT_TURN_IGNORED)]      # a turn, not an edit
+        if weak_rules and not _enough(g):
+            continue
+        if not g:
+            continue
         best: dict[str, tuple[float, float, str, str]] = {}
         for sgl in g:                                   # one of each kind of evidence counts once
             key = sgl[2].split(" by ")[0].split(":")[0][:30]
@@ -558,7 +615,7 @@ def cut_points(sig: Signal, words: Sequence[SpokenWord], s: dict) -> list[Findin
         suggestion = ("Smooth the edit: a short crossfade, or recut so the word isn't clipped." if kind == ABRUPT_CUT
                       else "Match the takes: room tone under the edit, level matched, a natural pause kept.")
         out.append(Finding(kind, t, t, round(min(0.95, score), 2), message, suggestion,
-                           [f"{x[2]} ({x[1]:.2f})" for x in best.values()]))
+                           [f"{x[2]} ({x[1]:.2f})" for x in sorted(best.values(), key=lambda x: -x[1])]))
     return out
 
 
@@ -617,7 +674,7 @@ def filler_words(words: Sequence[SpokenWord], s: dict) -> tuple[list[Finding], d
 # --- everything together ---------------------------------------------------------------------------------
 
 SEVERITY = {STUTTER: "medium", REPEATED_PHRASE: "medium", ABRUPT_CUT: "medium", JUMP_CUT: "medium",
-            DEAD_AIR: "medium", FILLER: "low"}
+            DEAD_AIR: "medium", FILLER: "low", MISSING_CUE: "high"}
 
 
 def merge_findings(found: list[Finding], within: float = 0.5) -> list[Finding]:
@@ -649,26 +706,88 @@ def to_issues(found: list[Finding], words: Sequence[SpokenWord]) -> list[Issue]:
         original = context_text(words, f.start, f.end) or f"({format_timestamp(f.start)})"
         issues.append(Issue(caption_id=audio_issue_id(n), timestamp=round(f.start, 3), type=f.kind, severity=severity,
                             original=original, message=f.message, suggestion=f.suggestion,
-                            confidence=float(min(1.0, max(0.0, f.confidence)))))
+                            confidence=float(min(1.0, max(0.0, f.confidence))), signals="; ".join(f.evidence)))
     return issues
+
+
+OVERLAP_KINDS = ("overlap", "overlap_ok")
+INTENTIONAL_KINDS = ("music", "sfx", "cue")
+
+
+def suppress(found: list[Finding], regions, sig: Signal, f0, s: dict) -> tuple[list[Finding], dict]:
+    """Drop findings the regions explain. Repeats: not in crosstalk, not over music or effects, not
+    when the voice changes between the two occurrences. Cuts and dead air: not inside music,
+    effects or cues, or within the margin around them. Counts what was hidden, and why."""
+    from src.audio.regions import different_voice
+
+    kept, hidden = [], {}
+
+    def hide(f: Finding, why: str, region=None) -> None:
+        hidden[why] = hidden.get(why, 0) + 1
+        if region is not None:
+            region.suppressed += 1
+
+    for f in found:
+        if f.kind in (STUTTER, REPEATED_PHRASE, FILLER):
+            r = regions.hit(f.start, f.end, OVERLAP_KINDS)
+            if r is not None and f.kind != FILLER:
+                hide(f, "repeat in overlapping speech", r)
+                continue
+            r = regions.hit(f.start, f.end, INTENTIONAL_KINDS)
+            if r is not None:
+                hide(f, f"{f.kind} over music or an effect", r)
+                continue
+            if f.pair is not None and different_voice(sig, f0, f.pair[0], f.pair[1], s):
+                hide(f, "repeat by a different voice (an echo, not a stutter)")
+                continue
+        elif f.kind in (ABRUPT_CUT, JUMP_CUT, DEAD_AIR):
+            r = regions.hit(f.start, f.end, INTENTIONAL_KINDS)
+            if r is not None:
+                hide(f, f"{f.kind.replace('_', ' ')} at music, an effect or a cue", r)
+                continue
+        kept.append(f)
+    return kept, hidden
+
+
+def _excluded_frames(sig: Signal, regions) -> np.ndarray:
+    mask = np.zeros(len(sig.bands), bool)
+    for r in regions.items:
+        if r.kind in INTENTIONAL_KINDS:
+            mask[max(0, int(r.start / 0.02)):int(r.end / 0.02) + 1] = True
+    return mask
 
 
 def check_audio(samples: np.ndarray, sr: int, words: Sequence[SpokenWord], settings: dict,
                 silent: Sequence[tuple[float, float | None]] | None = None,
-                backup_words=None) -> tuple[list[Issue], dict]:
+                backup_words=None, segments=None, guide: dict | None = None, cue_sheet=(),
+                references=()) -> tuple[list[Issue], dict]:
     """Every audio check the settings switch on. Returns the issues and counts for the report.
     silent: the file's silences (None = found from the samples). backup_words: a callable giving
     a second transcript (Whisper without the disfluency prompt), asked for only when the first one
-    skipped a long stretch of speech."""
+    skipped a long stretch of speech. segments: Whisper's (start, end, no_speech_prob). guide: the
+    client's audio guidelines. cue_sheet: the episode's cue sheet regions. references: the
+    client's reference cues as (name, samples at sr).
+    With "suppression: false" the regions are still found and listed, but nothing is hidden and
+    the old cut rules apply (for measuring what the suppression changes)."""
+    from src.audio.regions import drop_lyrics, find_regions, pitch_track, required_cues
+
     s = effective_settings(settings)
+    use = bool(s.get("suppression", True))
     words = [w for w in words if w.text.strip()]
     sig = analyze(samples, sr, s)
     gaps = untranscribed_speech(sig, words, float(s.get("transcript_gap_sec", 5.0)))
     stats_gaps = len(gaps)
     if gaps and backup_words is not None:
         words = fill_gaps(words, [w for w in backup_words() if w.text.strip()], gaps)
+    f0 = pitch_track(sig.samples, sr)
+    regions = find_regions(sig, f0, words, segments, s, guide or {}, cue_sheet, references)
+    dropped = 0
+    if use:
+        words, dropped = drop_lyrics(words, regions, s)
+        sig.excluded = _excluded_frames(sig, regions)
     found: list[Finding] = []
-    stats: dict = {"duration": round(sig.duration, 1), "words": len(words), "transcript_gaps": stats_gaps}
+    stats: dict = {"duration": round(sig.duration, 1), "words": len(words), "transcript_gaps": stats_gaps,
+                   "suppression": use, "lyrics_dropped": dropped}
     if check_on(s, "stutter") or check_on(s, "repeated_phrase"):
         rep = [f for f in transcript_repeats(words, s) if speech_share(sig, f.start, f.end) >= 0.3]
         found += [f for f in rep if check_on(s, "stutter" if f.kind == STUTTER else "repeated_phrase")]
@@ -677,7 +796,7 @@ def check_audio(samples: np.ndarray, sr: int, words: Sequence[SpokenWord], setti
     if check_on(s, "repeated_take"):
         found += repeated_takes(sig, words, s)
     if check_on(s, "abrupt_cut") or check_on(s, "jump_cut"):
-        found += [f for f in cut_points(sig, words, s) if check_on(s, f.kind)]
+        found += [f for f in cut_points(sig, words, s, regions, weak_rules=use) if check_on(s, f.kind)]
     if check_on(s, "dead_air"):
         if silent is None:
             silent = silences_in(samples, sr, float(s.get("silence_noise_db", -60.0)), float(s.get("dead_air_sec", 2.5)),
@@ -688,6 +807,15 @@ def check_audio(samples: np.ndarray, sr: int, words: Sequence[SpokenWord], setti
     if check_on(s, "fillers"):
         found += fill
     found = merge_findings(found)
+    hidden: dict = {}
+    if use:
+        found, hidden = suppress(found, regions, sig, f0, s)
+    for at, message in required_cues(regions, guide or {}, sig.duration):
+        found.append(Finding(MISSING_CUE, at, at, 0.8, message, "Add the cue as the guidelines require.",
+                             ["audio guidelines: required cue not matched"]))
     min_conf = float(s.get("min_confidence", 0.0))
     found = [f for f in found if f.confidence >= min_conf]
+    stats["hidden"] = hidden
+    stats["regions"] = [r.as_dict() for r in regions.items]
+    stats["speaker_changes"] = len(regions.speaker_changes)
     return to_issues(found, words), stats

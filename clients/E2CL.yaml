@@ -68,11 +68,37 @@ audio:
   weight_short_gap: 0.35
   weight_room_tone: 0.75
   weight_loudness: 0.6
+  dead_stop_db: 12               # a cut-off word that falls this much within ~10 ms "stops dead" (stronger evidence)
+  # --- Mixed, multi-speaker episodes: what to leave alone (src/audio/regions.py) ---
+  suppression: true              # false = find the regions but hide nothing (only to measure what suppression changes)
+  voice_pitch_semitones: 3.5     # two occurrences of a word this far apart in pitch are two people: not a stutter
+  voice_min_similarity: 0.35     # ...or the same word sounding this unlike itself (timbre)
+  turn_pitch_semitones: 5        # a change of speaker: the typical pitch of the stretch before and after differs this much
+  turn_window_sec: 1.2           # ...each stretch this long
+  overlap_collision_sec: 0.08    # crosstalk signs: word times overlapping by this much...
+  overlap_low_prob: 0.45         # ...a run of words Whisper is this unsure of...
+  overlap_low_prob_run: 3        # ...this many in a row...
+  overlap_energy_rise_db: 6      # ...or speech this much louder than usual with a flatter spectrum (two signs needed)
+  music_word_min_prob: 0.6       # words over music less sure than this are dropped (Whisper writes "lyrics")
+  music_no_speech_prob: 0.6      # Whisper segments this sure there's no speech, while not silent, count as music
+  music_min_above_floor_db: 15   # music: energy this far above the room tone...
+  music_tonal_flatness: 0.12     # ...and tonal (spectral flatness under this)...
+  music_beat_strength: 0.45      # ...or with a beat this regular...
+  music_max_dips: 0.15           # ...or steady (fewer syllable-like dips than this share)
+  music_min_sec: 1.5             # shortest music region
+  bed_min_above_floor_db: 12     # a bed under speech: pauses between words this far above the room tone,
+  bed_min_pause_sec: 0.09        #   at least this long,
+  bed_min_pauses: 3              #   at least this many in a row (within 4 s of each other),
+  bed_same_shape_db: 4           #   each sounding like the last (spectral shape and
+  bed_same_level_db: 6           #   level within these): another voice bleeding in doesn't
+  sfx_rise_db: 15                # an effect: a rise this sharp, outside any word...
+  sfx_decay_db: 15               # ...falling this much within 0.4 s
+  cue_match_threshold: 0.6       # a reference cue matches where the band-energy correlation is at least this
   min_confidence: 0.0            # drop audio flags less sure than this
   # The values the sensitivity chooses between.
   levels:
     low:
-      acoustic_similarity: 0.97  # how alike two stretches must sound to be a repeated sound (0-1)
+      acoustic_similarity: 0.98  # how alike two stretches must sound to be a repeated sound (0-1)
       take_acoustic_similarity: 0.85
       click_ratio: 12            # a click jumps this many times more than the signal around it
       room_tone_db: 8            # background level change counted as a different room
@@ -80,7 +106,7 @@ audio:
       cut_score: 0.8             # combined evidence needed to flag a cut
       dead_air_sec: 3.5          # silence longer than this is dead air
     medium:
-      acoustic_similarity: 0.94
+      acoustic_similarity: 0.955
       take_acoustic_similarity: 0.75
       click_ratio: 9
       room_tone_db: 6
@@ -88,7 +114,7 @@ audio:
       cut_score: 0.65
       dead_air_sec: 2.5
     high:
-      acoustic_similarity: 0.9
+      acoustic_similarity: 0.93
       take_acoustic_similarity: 0.65
       click_ratio: 7
       room_tone_db: 4.5
@@ -97,3 +123,16 @@ audio:
       dead_air_sec: 1.8
   silence_noise_db: -60          # quieter than this (20 ms level, dBFS) is always silence...
   silence_above_floor_db: 8      # ...and so is anything less than this above the local room tone
+
+audio_guidelines:
+  # Music the guidelines allow is never flagged: intro, outro, transitions, ad_breaks, under_speech (beds).
+  # Music found somewhere not allowed (a bed when under_speech is missing) is listed but checked like speech.
+  music_allowed: [intro, outro, transitions, ad_breaks, under_speech]
+  sfx_allowed: [transitions, stingers, emphasis]      # empty = effects aren't expected: hits are checked like speech
+  reference_folder: clients/E2CL/reference_audio   # the client's stingers, jingles, beds and effects (a folder; relative = in the data folder)
+  sensitivity: normal            # strict / normal / lenient: ignore 0.15 / 0.3 / 0.6 s around each music or effect
+                                 # region; lenient also recognizes music more readily
+  required_cues:                 # optional check, off: report a required cue that isn't there
+    enabled: false
+    cues: []                     # e.g. {reference: intro_stinger.wav, at: start, within_sec: 30}
+                                 #      {reference: outro_music.wav, at: end, within_sec: 60}

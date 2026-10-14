@@ -28,6 +28,16 @@ log = logging.getLogger("qcbot.transcribe")
 Transcriber = Callable[[Path, dict, str], list[SpokenWord]]
 
 
+class Transcript(list):
+    """The words (a list of SpokenWord), plus Whisper's segments: (start, end, no_speech_prob),
+    where no_speech_prob is how sure Whisper is that the stretch has no speech (music, noise).
+    segments is None for a transcript cached before segments were kept."""
+
+    def __init__(self, words=(), segments: list | None = None):
+        super().__init__(words)
+        self.segments = segments
+
+
 def build_initial_prompt(terms: Sequence[str], max_chars: int = 600, prefix: str = "") -> str:
     """Whisper reads the prompt as text that came "before" the audio; listing names there makes it
     more likely to spell them the same way. Whisper only uses the last ~224 tokens of a prompt.
@@ -140,12 +150,14 @@ def faster_whisper_transcriber(models_dir: Path | Sequence[Path] | None = None,
             vad_filter=ws["vad_filter"], initial_prompt=prompt or None,
             condition_on_previous_text=ws.get("condition_on_previous_text", True),
         )
-        words: list[SpokenWord] = []
+        words = Transcript(segments=[])
         duration = info.duration or 0.0
         for segment in segments:                  # a generator: transcription happens while iterating
             for w in segment.words or []:
                 words.append(SpokenWord(text=w.word.strip(), start=float(w.start), end=float(w.end),
                                         probability=float(w.probability)))
+            words.segments.append((round(float(segment.start), 3), round(float(segment.end), 3),
+                                   round(float(getattr(segment, "no_speech_prob", 0.0) or 0.0), 4)))
             progress(segment.end / duration if duration else 0.0)    # also where a cancel takes effect
         return words
     return transcribe
@@ -155,17 +167,21 @@ def _save(path: Path, video: Path, digest: str, ws: dict, prompt: str, words: li
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {"video": video.name, "sha256": digest, "settings": ws, "initial_prompt": prompt,
             "words": [[w.text, round(w.start, 3), round(w.end, 3), round(w.probability, 4)] for w in words]}
+    segments = getattr(words, "segments", None)
+    if segments is not None:
+        data["segments"] = [list(s) for s in segments]
     tmp = path.with_suffix(".tmp")
     with tmp.open("w", encoding="utf-8", newline="\n") as f:
         json.dump(data, f, ensure_ascii=False)
     tmp.replace(path)
 
 
-def _load(path: Path) -> list[SpokenWord] | None:
+def _load(path: Path) -> "Transcript | None":
     try:
         with path.open(encoding="utf-8") as f:
             data = json.load(f)
-        return [SpokenWord(t, s, e, p) for t, s, e, p in data["words"]]
+        segments = [tuple(s) for s in data["segments"]] if "segments" in data else None
+        return Transcript([SpokenWord(t, s, e, p) for t, s, e, p in data["words"]], segments)
     except (OSError, ValueError, KeyError, TypeError):
         log.warning("cached transcript %s is unreadable; transcribing again", path.name)
         return None
@@ -173,8 +189,10 @@ def _load(path: Path) -> list[SpokenWord] | None:
 
 def get_transcript(video: Path, machine: dict, settings: dict, glossary_terms: Sequence[str],
                    cache_dir: Path, models_dir: Path | Sequence[Path] | None = None,
-                   transcriber: Transcriber | None = None, progress: Stage | None = None) -> list[SpokenWord]:
-    """The words spoken in the video, from the cache if this exact video was done before."""
+                   transcriber: Transcriber | None = None, progress: Stage | None = None,
+                   need_segments: bool = False) -> Transcript:
+    """The words spoken in the video, from the cache if this exact video was done before.
+    need_segments: a cached transcript without Whisper's segments (older cache) is made again."""
     video = Path(video)
     if not video.is_file():
         raise FileNotFoundError(f"video not found: {video}")
@@ -188,7 +206,7 @@ def get_transcript(video: Path, machine: dict, settings: dict, glossary_terms: S
     cache_file = Path(cache_dir) / f"{digest[:16]}-{ws['model_size']}-{settings_key}.json"
     if cache_file.is_file():
         words = _load(cache_file)
-        if words is not None:
+        if words is not None and (words.segments is not None or not need_segments):
             log.info("transcript: from cache (%s)", cache_file.name)
             return words
 
@@ -199,6 +217,8 @@ def get_transcript(video: Path, machine: dict, settings: dict, glossary_terms: S
         log.info("transcribing %s with Whisper '%s' on the CPU...", video.name, ws["model_size"])
         started = time.monotonic()
         words = transcriber(wav, ws, prompt)
+    if not isinstance(words, Transcript):                # a stand-in transcriber's plain list
+        words = Transcript(words, getattr(words, "segments", None))
     log.info("transcript: %d words in %.0f s", len(words), time.monotonic() - started)
     _save(cache_file, video, digest, ws, prompt, words)
     return words
