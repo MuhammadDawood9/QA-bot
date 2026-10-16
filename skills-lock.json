@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "grammar-check": {
+      "source": "phuryn/pm-skills",
+      "sourceType": "github",
+      "skillPath": "pm-toolkit/skills/grammar-check/SKILL.md",
+      "computedHash": "543ee9e41682444e3ad9f411e443cfbd547620afc83745583c2de697509f9cc7"
+    }
+  }
+}
