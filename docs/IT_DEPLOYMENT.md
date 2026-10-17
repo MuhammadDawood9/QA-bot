@@ -24,7 +24,7 @@ Nothing needs the internet once this is done.
 |---|---|---|---|
 | (a) | The app | Windows: any folder, e.g. `%LOCALAPPDATA%\Programs\VideoQCBot\` (per user) or `C:\Program Files\VideoQCBot\` (per machine). macOS: `/Applications/Video QC Bot.app` | Only the installer. The app never writes inside itself. |
 | (b) | **Shared data**: clients, glossary, rules, ignore list, color thresholds, floor settings, backups, changelog, `latest.json`, models, optional shared reports | One folder for the whole floor | Editors (through the app); everyone reads |
-| (c) | **Per-user local data**: settings, reports, caches, logs, a cached copy of (b) | Windows `%LOCALAPPDATA%\VideoQCBot\` (`data\`, `Logs\`), macOS `~/Library/Application Support/VideoQCBot/`, `~/Library/Logs/VideoQCBot/`. Reports: `Documents\Video QC Bot reports` | The user |
+| (c) | **Per-user local data**: settings, reports, caches, logs, a cached copy of (b) | Windows `%LOCALAPPDATA%\VideoQCBot\` (`data\`, `Logs\`), macOS `~/Library/Application Support/VideoQCBot/`, `~/Library/Logs/VideoQCBot/`. Reports default under `data\reports` (changeable in Settings) | The user |
 | | One-check-at-a-time lock (all users of a PC) | Windows `%PROGRAMDATA%\VideoQCBot\check.lock`, macOS `/Users/Shared/VideoQCBot/check.lock` | The app (normal users can write there by default) |
 
 The shared folder's layout (the app creates it the first time an editor points it at an empty folder):

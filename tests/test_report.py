@@ -72,6 +72,14 @@ def test_header_and_summary(tmp_path):
     assert "| **All** | **1** | **1** | **1** | **3** |" in text
 
 
+def test_a_speech_skip_note_is_a_bold_line_under_the_header(tmp_path):
+    info_ = info(notes=["Speech comparison skipped: only 1 word in 27 s (coverage 4%)"])
+    written = build_report(CAPTIONS, ISSUES, info_, settings(tmp_path), None)
+    text = written[0].read_text(encoding="utf-8")
+    assert "**Speech comparison skipped: only 1 word in 27 s (coverage 4%)**" in text
+    assert text.index("Speech comparison skipped") < text.index("## Summary")     # near the top
+
+
 def test_issues_on_one_caption_share_one_section(tmp_path):
     _, text = build(tmp_path)
     assert text.count("### 00:02.100, caption #2") == 1

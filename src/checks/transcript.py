@@ -104,6 +104,8 @@ def _phrase(words: Sequence[str], indices: set[int], context: int = 1) -> str:
 def check(captions: Sequence[Caption], settings: dict, context: CheckContext | None = None) -> list[Issue]:
     if not settings.get("enabled", True) or context is None or context.transcript is None:
         return []
+    if (context.stats.get("speech") or {}).get("reason"):
+        return []                       # too little speech to compare: the report says why instead
     words: list[SpokenWord] = context.transcript
     fillers = settings.get("fillers", [])
     equivalents = settings.get("equivalents", {})

@@ -714,7 +714,9 @@ Windows 10/11 and macOS (Intel, also Apple Silicon); OS-specific code only in `s
   `del.mp4` from the `.exe`. **The macOS build is untested** (no Mac here).
 - **A packaged app writes nothing inside itself:** on first run the editable files are copied into the OS data folder
   (`platformdirs.user_data_path`) and never overwritten; config, cache and models are read from there, and reports
-  default to `Documents/Video QC Bot reports`. Running from source is unchanged.
+  default under the app's own `data\reports` (`%LOCALAPPDATA%\VideoQCBot\data\reports` on Windows,
+  `~/Library/Application Support/VideoQCBot/data/reports` on macOS; changeable in Settings). Running from source is
+  unchanged.
 - **macOS PATH:** apps started from Finder or at login don't see Homebrew's folders, so the macOS platform module adds
   `/opt/homebrew/bin` and `/usr/local/bin` to the app's PATH (otherwise a Homebrew ffmpeg isn't found).
 - `--selftest` and `--check VIDEO` let a build be verified without clicking through it.

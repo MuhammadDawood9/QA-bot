@@ -239,6 +239,26 @@ def test_audio_file_runs_only_the_audio_checks(podcast):
     assert "Caption checks: not run" in text and "Color" not in text.replace("color)", "")
 
 
+def test_speech_skip_never_touches_the_audio_edit_checks(podcast, tmp_path, monkeypatch):
+    """The gate only sets a flag. The stutter / repeated-phrase / cut checks keep their own
+    transcript, so their issues are identical whether the caption comparison runs or skips."""
+    path, p, _ = podcast
+
+    def fake(video, machine, settings, terms, cache_dir, models_dir=None, transcriber=None, progress=None,
+             need_segments=False):
+        # The audio-edit pass (disfluent transcript) is full; the caption comparison's is a word.
+        return p.speech.words if settings.get("initial_prompt_prefix") else [SpokenWord("Yeah", 0.1, 0.3, 0.9)]
+
+    monkeypatch.setattr("src.engine.get_transcript", fake)
+    srt = tmp_path / "episode.srt"
+    srt.write_text("1\n00:00:00,000 --> 00:00:02,000\nHello there\n", encoding="utf-8")
+    without = run_qc(path, "E2CL", config=CONFIG)
+    skipped = run_qc(path, "E2CL", options=QCOptions(srt_path=srt), config=CONFIG)
+    audio = lambda r: [(i.type, round(i.timestamp, 2)) for i in r if i.caption_id <= -3000]
+    assert audio(without) and audio(skipped) == audio(without)
+    assert (skipped.context.stats.get("speech") or {}).get("reason")
+
+
 def test_audio_checks_can_be_switched_off_from_the_menu(podcast):
     path, _, _ = podcast
     result = run_qc(path, "E2CL", options=QCOptions(disabled_checks=frozenset({"audio"})), config=CONFIG)

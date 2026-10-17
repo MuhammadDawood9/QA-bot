@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import logging
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +22,8 @@ from typing import Sequence
 from src.models import AUDIO_ISSUES, SEVERITIES, Caption, Issue, audio_number, shot_number
 from src.report.screenshots import grab_frame
 from src.utils.timecode import format_timestamp
+
+log = logging.getLogger("qcbot.report")
 
 LABELS = {
     "too_short": "Too short",
@@ -80,6 +83,7 @@ class ReportInfo:
     client_rules_version: str | None = None             # hash of the client file (+ its color settings)
     audio_only: bool = False                            # an audio file: clips and waveforms, no screenshots
     audio_regions: list[dict] = field(default_factory=list)   # what the audio checks left alone, and why
+    notes: list[str] = field(default_factory=list)      # a bold line under the header facts (e.g. speech skipped)
 
 
 def captions_source(info: "ReportInfo") -> str:
@@ -140,6 +144,48 @@ def report_folder(base: Path, info: ReportInfo) -> Path:
     return folder
 
 
+def local_reports_dir() -> Path:
+    """The app's own reports folder, in the local app data folder (%LOCALAPPDATA%\\VideoQCBot
+    \\data\\reports): where reports go when the chosen folder can't be written to. Windows
+    "Controlled folder access" can block Documents and other protected folders; this one is
+    never protected."""
+    from src.config import user_data_root
+
+    return user_data_root() / "reports"
+
+
+def _probe(folder: Path) -> None:
+    """Write and delete a tiny file: the only sure proof a folder accepts writes, since an
+    existing folder can still refuse them (Controlled folder access, a full disk, a read-only
+    share)."""
+    probe = folder / ".write_test"
+    try:
+        probe.write_text("", encoding="utf-8")
+    finally:
+        probe.unlink(missing_ok=True)
+
+
+def ensure_writable(folder: Path) -> Path:
+    """Create `folder` (and its parents) and prove it can be written to; raises OSError if not."""
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    _probe(folder)
+    return folder
+
+
+def reports_folder_for(requested: Path, info: ReportInfo) -> Path:
+    """This report's own folder under `requested` (never overwriting an earlier one). When
+    `requested` can't be created or written to, the report goes under the local app data folder
+    instead, and the reason is logged for the user."""
+    try:
+        return ensure_writable(report_folder(requested, info))
+    except OSError as exc:
+        fallback = local_reports_dir()
+        log.warning("%s can't be written to (%s). The report was saved in %s instead - pick "
+                    "another reports folder in Settings.", requested, exc, fallback)
+        return ensure_writable(report_folder(fallback, info))
+
+
 def write_csv(path: Path, issues: Sequence[Issue]) -> None:
     # utf-8-sig is UTF-8 with a marker at the start, so Excel shows curly quotes and dashes correctly.
     with path.open("w", encoding="utf-8-sig", newline="") as f:
@@ -187,8 +233,7 @@ class ReportData:
 def prepare(captions: Sequence[Caption], issues: Sequence[Issue], info: ReportInfo,
             settings: dict, ffmpeg: str | None = None) -> ReportData:
     """Create the report folder, take the screenshots, and group the issues by caption."""
-    folder = report_folder(Path(settings.get("output_dir", "reports")), info)
-    folder.mkdir(parents=True)
+    folder = reports_folder_for(Path(settings.get("output_dir", "reports")), info)
     issues = sorted(issues, key=lambda i: (i.timestamp, i.caption_id, _RANK[i.severity]))
     by_caption: dict[int, list[Issue]] = defaultdict(list)
     for issue in issues:
@@ -215,8 +260,11 @@ def prepare(captions: Sequence[Caption], issues: Sequence[Issue], info: ReportIn
             if info.audio_only:
                 continue
             cap = caps.get(cid)
-            at = by_caption[cid][0].timestamp if cap is None else (
+            first = by_caption[cid][0]
+            at = first.timestamp if cap is None else (
                 cap.start if settings.get("screenshot_at", "middle") == "start" else (cap.start + cap.end) / 2)
+            if first.screenshot_at is not None:            # a merged color range: the worst frame
+                at = first.screenshot_at
             name = f"screenshots/{int(round(at * 1000)):08d}_caption{cid}.jpg"
             if grab_frame(ffmpeg, info.video, at, folder / name, settings.get("screenshot_width", 640)):
                 shots[cid] = (name, at)
@@ -276,6 +324,8 @@ def _header(info, captions, issues, flagged) -> list[str]:
     if info.checks:
         lines.append("- **Checks:**")
         lines += [f"  - {md(c)}" for c in info.checks]
+    for note in info.notes:
+        lines += ["", f"**{md(note)}**"]
     if info.audio_only and not captions:
         lines += ["", f"**{len(issues)} issue{'s' if len(issues) != 1 else ''}.**", ""]
     else:

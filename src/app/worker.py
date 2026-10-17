@@ -2,7 +2,7 @@
 
     runner = CheckRunner()
     runner.progress.connect(...)      # (stage name, overall fraction 0..1)
-    runner.finished.connect(...)      # (issue count, report path)
+    runner.finished.connect(...)      # (issue count, report path, note: "" or why the speech comparison skipped)
     runner.warning.connect(...)       # (message): low disk or memory, a report not copied to the shared folder
     runner.failed.connect(...)        # (message for the user)
     runner.cancelled.connect(...)
@@ -38,7 +38,7 @@ log = logging.getLogger("qcbot.app")
 
 class _Job(QObject):
     progress = Signal(str, float)
-    finished = Signal(int, str)
+    finished = Signal(int, str, str)
     failed = Signal(str)
     cancelled = Signal()
     warning = Signal(str)
@@ -107,9 +107,11 @@ class _Job(QObject):
             if self.cancel_event.is_set():
                 raise Cancelled("cancelled before the report")
             report = build_docx_report(result, output_dir=self.reports_dir)
+            self._warn_if_fallback(report)
             log.info("done: %d issues, report %s", len(result), report)
             self._share(Path(report))
-            self.finished.emit(len(result), str(report))
+            notes = getattr(result, "notes", None) or []
+            self.finished.emit(len(result), str(report), notes[0] if notes else "")
         except Cancelled:
             log.info("check of %s cancelled", self.video.name)
             self.cancelled.emit()
@@ -122,11 +124,24 @@ class _Job(QObject):
         finally:
             lock.release()
 
+    def _warn_if_fallback(self, report: Path) -> None:
+        """When the reports folder was unwritable and the report landed in the app's local
+        folder, say so: the user should know where the report actually is, and why."""
+        if self.reports_dir is None:
+            return
+        folder, chosen = Path(report).parent.resolve(), Path(self.reports_dir).resolve()
+        if folder == chosen or chosen in folder.parents:
+            return
+        message = (f"{self.reports_dir} can't be written to, so the report was saved in "
+                   f"{folder} instead - pick another reports folder in Settings.")
+        log.warning(message)
+        self.warning.emit(message)      # shown in the app (main.py routes it to notify())
+
 
 class CheckRunner(QObject):
     """One check at a time, on its own thread."""
     progress = Signal(str, float)
-    finished = Signal(int, str)
+    finished = Signal(int, str, str)
     failed = Signal(str)
     cancelled = Signal()
     warning = Signal(str)

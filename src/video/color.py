@@ -29,15 +29,16 @@ import hashlib
 import json
 import logging
 import math
+import re
 import time
 import urllib.request
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from statistics import median
-from typing import Iterator, Sequence
+from typing import Callable, Iterator, Sequence
 
-from src.models import (COLOR_CAST, CRUSHED_BLACKS, FLAT_CONTRAST, OVEREXPOSED, SATURATION, SHOT_MISMATCH,
-                        SKIN_TONE, UNDEREXPOSED, Issue, shot_issue_id, shot_number)
+from src.models import (COLOR_CAST, CRUSHED_BLACKS, FLAT_CONTRAST, OVEREXPOSED, SATURATION, SEVERITIES,
+                        SHOT_MISMATCH, SKIN_TONE, UNDEREXPOSED, Issue, shot_issue_id, shot_number)
 from src.utils.cache import text_hash
 from src.utils.progress import Stage, silent
 from src.utils.system import file_sha256
@@ -47,6 +48,11 @@ log = logging.getLogger("qcbot.color")
 
 COLOR_VERSION = "3"     # 2: untagged HD read as BT.709; 3: measurements and faces counted per shot
 ANALYSIS_WIDTH = 480
+
+# Flags with a measured number behind them (Measurement): flags of the same type on consecutive
+# shots merge into one issue covering the range. shot_mismatch is a per-shot comparison, not a
+# number, and is left as it is.
+MERGE_TYPES = (OVEREXPOSED, UNDEREXPOSED, CRUSHED_BLACKS, FLAT_CONTRAST, SATURATION, COLOR_CAST, SKIN_TONE)
 
 YUNET_URL = ("https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/"
              "face_detection_yunet_2023mar.onnx")
@@ -92,6 +98,31 @@ class Shot:
     def is_black(self) -> bool:
         """A black screen (fade, intro, ending): no picture to grade."""
         return (self.value("luma_median") or 0) <= 10 and (self.value("white_level") or 0) <= 25
+
+
+@dataclass(frozen=True)
+class Measurement:
+    """The number behind one shot's flag, for merging repeated flags into one range issue: its
+    value, which way is worse, how to read the same number from any frame (to pick the worst frame
+    for the screenshot), and how to print one value ("blacks at {v:.0f}/255")."""
+    value: float
+    worse: str                                  # "high" or "low": the direction that is worse
+    frame: Callable[[FrameStats], float]        # the measured number from a single frame
+    text: str                                   # one value: "blacks at {v:.0f}/255"
+
+
+_VALUE_FIELD = re.compile(r"\{v(?::([^}]*))?\}")
+
+
+def measure_text(text: str, lo: float, hi: float) -> str:
+    """One value as the template reads ("blacks at 52/255"), or the span when they differ
+    ("blacks at 49-53/255"). The template's own format decides: values that round to the same
+    printed number are one value."""
+    match = _VALUE_FIELD.search(text)
+    spec = (match.group(1) or "") if match else ""
+    if f"{lo:{spec}}" == f"{hi:{spec}}":
+        return text.format(v=lo)
+    return text[:match.start()] + f"{lo:{spec}}-{hi:{spec}}" + text[match.end():]
 
 
 # --- measuring frames ----------------------------------------------------------------------
@@ -268,68 +299,89 @@ def _within(value: float, bounds) -> bool:
     return lo <= value <= hi
 
 
-def shot_issues(shot: Shot, s: dict) -> list[Issue]:
-    """Problems a shot has on its own."""
+def shot_issues(shot: Shot, s: dict, measures: dict[tuple[int, str], "Measurement"] | None = None) -> list[Issue]:
+    """Problems a shot has on its own. `measures`, when given, gets the number behind each flag
+    (shot number, type), so repeated flags can be merged into one range (merge_color_issues)."""
     if shot.is_black:
         return []
-    out = []
+    out: list[Issue] = []
+
+    def add(issue: Issue, measure: Measurement | None = None) -> None:
+        if measures is not None and measure is not None:
+            measures[(shot.number, issue.type)] = measure
+        out.append(issue)
+
     white = shot.value("clipped_white")
     if white is not None and white >= s.get("clipped_white", 0.04):
-        out.append(_issue(shot, OVEREXPOSED, "high" if white >= s.get("overexposed_high_factor", 2.5) * s.get("clipped_white", 0.04) else "medium",
-                          f"Overexposed: {white:.0%} of the picture is clipped pure white, so detail there is lost.",
-                          "Bring the highlights / exposure down until whites keep their detail.", 0.8))
+        add(_issue(shot, OVEREXPOSED, "high" if white >= s.get("overexposed_high_factor", 2.5) * s.get("clipped_white", 0.04) else "medium",
+                   f"Overexposed: {white:.0%} of the picture is clipped pure white, so detail there is lost.",
+                   "Bring the highlights / exposure down until whites keep their detail.", 0.8),
+            Measurement(white, "high", lambda f: f.clipped_white, "white clipped {v:.0%}"))
     luma, top = shot.value("luma_median"), shot.value("white_level")
     if luma is not None and luma < s.get("dark_median", 40) and (top or 0) < s.get("dark_white_level", 200):
-        out.append(_issue(shot, UNDEREXPOSED, "medium",
-                          f"Too dark: the middle brightness is {luma:.0f}/255 and even the brightest parts reach "
-                          f"only {top:.0f}/255.", "Raise exposure / midtones.", 0.7))
+        add(_issue(shot, UNDEREXPOSED, "medium",
+                   f"Too dark: the middle brightness is {luma:.0f}/255 and even the brightest parts reach "
+                   f"only {top:.0f}/255.", "Raise exposure / midtones.", 0.7),
+            Measurement(luma, "low", lambda f: f.luma_median, "middle brightness {v:.0f}/255"))
     black = shot.value("clipped_black")
     if black is not None and black >= s.get("clipped_black", 0.15):
-        out.append(_issue(shot, CRUSHED_BLACKS, "medium",
-                          f"Crushed blacks: {black:.0%} of the picture is pure black, so shadow detail is lost.",
-                          "Lift the shadows slightly.", 0.7))
+        add(_issue(shot, CRUSHED_BLACKS, "medium",
+                   f"Crushed blacks: {black:.0%} of the picture is pure black, so shadow detail is lost.",
+                   "Lift the shadows slightly.", 0.7),
+            Measurement(black, "high", lambda f: f.clipped_black, "pure black {v:.0%}"))
     lifted, top = shot.value("black_level"), shot.value("white_level")
     exposure_flagged = any(i.type in (OVEREXPOSED, UNDEREXPOSED) for i in out)   # the bigger problem; said once
     if lifted is not None and top is not None and not exposure_flagged:
         if lifted >= s.get("lifted_black_level", 40):
-            out.append(_issue(shot, FLAT_CONTRAST, "medium",
-                              f"Washed-out, lifted blacks: the darkest parts are grey ({lifted:.0f}/255 instead of "
-                              f"near 0), tonal range {top - lifted:.0f} of 255.",
-                              "Set the black point: pull the blacks down and add contrast.", 0.6))
+            add(_issue(shot, FLAT_CONTRAST, "medium",
+                       f"Washed-out, lifted blacks: the darkest parts are grey ({lifted:.0f}/255 instead of "
+                       f"near 0), tonal range {top - lifted:.0f} of 255.",
+                       "Set the black point: pull the blacks down and add contrast.", 0.6),
+                Measurement(lifted, "high", lambda f: f.black_level, "blacks at {v:.0f}/255"))
         elif top - lifted < s.get("min_tonal_range", 120) and _within(luma or 0, s.get("flat_luma_range", [60, 200])):
-            out.append(_issue(shot, FLAT_CONTRAST, "low",
-                              f"Low contrast: the tonal range is only {top - lifted:.0f} of 255.",
-                              "Add contrast: spread the blacks and whites further apart.", 0.5))
+            add(_issue(shot, FLAT_CONTRAST, "low",
+                       f"Low contrast: the tonal range is only {top - lifted:.0f} of 255.",
+                       "Add contrast: spread the blacks and whites further apart.", 0.5),
+                Measurement(top - lifted, "low", lambda f: f.white_level - f.black_level, "tonal range {v:.0f} of 255"))
     chroma = shot.value("chroma")
     if chroma is not None and chroma < s.get("dull_chroma", 6):
-        out.append(_issue(shot, SATURATION, "low", f"Dull, almost grey colors (saturation {chroma:.0f}).",
-                          "Add saturation / vibrance, unless the grey look is intended.", 0.5))
+        add(_issue(shot, SATURATION, "low", f"Dull, almost grey colors (saturation {chroma:.0f}).",
+                   "Add saturation / vibrance, unless the grey look is intended.", 0.5),
+            Measurement(chroma, "low", lambda f: f.chroma, "saturation {v:.0f}"))
     elif chroma is not None and chroma > s.get("oversaturated_chroma", 40):
-        out.append(_issue(shot, SATURATION, "medium", f"Oversaturated colors (saturation {chroma:.0f}).",
-                          "Reduce saturation.", 0.6))
+        add(_issue(shot, SATURATION, "medium", f"Oversaturated colors (saturation {chroma:.0f}).",
+                   "Reduce saturation.", 0.6),
+            Measurement(chroma, "high", lambda f: f.chroma, "saturation {v:.0f}"))
     ca, cb = shot.value("cast_a"), shot.value("cast_b")
     if ca is not None and cb is not None:
         strength = math.hypot(ca, cb)
         if strength >= s.get("cast_strength", 6):
-            out.append(_issue(shot, COLOR_CAST, "medium" if strength >= s.get("cast_medium_factor", 1.6) * s.get("cast_strength", 6) else "low",
-                              f"{cast_name(ca, cb).capitalize()} color cast: whites and greys are tinted "
-                              f"(a* {ca:+.0f}, b* {cb:+.0f}; neutral is 0, 0).",
-                              "White-balance on something that should be white or grey.", 0.6))
+            add(_issue(shot, COLOR_CAST, "medium" if strength >= s.get("cast_medium_factor", 1.6) * s.get("cast_strength", 6) else "low",
+                       f"{cast_name(ca, cb).capitalize()} color cast: whites and greys are tinted "
+                       f"(a* {ca:+.0f}, b* {cb:+.0f}; neutral is 0, 0).",
+                       "White-balance on something that should be white or grey.", 0.6),
+                Measurement(strength, "high", lambda f: math.hypot(f.cast_a or 0, f.cast_b or 0), "white tint {v:.0f}"))
     hue, sc = shot.value("skin_hue"), shot.value("skin_chroma")
     if hue is not None and sc is not None:
         lo, hi = s.get("skin_hue_range", [20, 70])
         problem = None
         if hue < lo:
             problem = f"skin is too pink/magenta (hue {hue:.0f}°, natural skin is about {lo}-{hi}°)"
+            measure = Measurement(hue, "low", lambda f: f.skin_hue, "skin hue {v:.0f}°")
         elif hue > hi:
             problem = f"skin is too yellow/green (hue {hue:.0f}°, natural skin is about {lo}-{hi}°)"
+            measure = Measurement(hue, "high", lambda f: f.skin_hue, "skin hue {v:.0f}°")
         elif sc > s.get("skin_max_chroma", 38):
             problem = f"skin is too orange/saturated (chroma {sc:.0f})"
+            measure = Measurement(sc, "high", lambda f: f.skin_chroma, "skin chroma {v:.0f}")
         elif sc < s.get("skin_min_chroma", 9):
             problem = f"skin is pale/grey (chroma {sc:.0f})"
+            measure = Measurement(sc, "low", lambda f: f.skin_chroma, "skin chroma {v:.0f}")
+        else:
+            measure = None
         if problem:
-            out.append(_issue(shot, SKIN_TONE, "medium", f"Skin tone: {problem}.",
-                              "Correct skin toward the skin-tone line on the vectorscope.", 0.6))
+            add(_issue(shot, SKIN_TONE, "medium", f"Skin tone: {problem}.",
+                       "Correct skin toward the skin-tone line on the vectorscope.", 0.6), measure)
     return out
 
 
@@ -384,12 +436,97 @@ def color_issues(shots: Sequence[Shot], settings: dict) -> list[Issue]:
     if not settings.get("enabled", True):
         return []
     skip = set(settings.get("skip", []) or [])
-    issues = [i for sh in shots for i in shot_issues(sh, settings)]
+    measures: dict[tuple[int, str], Measurement] = {}
+    issues = [i for sh in shots for i in shot_issues(sh, settings, measures)]
     flagged: dict[int, set[str]] = {}
     for i in issues:
         flagged.setdefault(shot_number(i.caption_id), set()).add(i.type)
     issues += mismatch_issues(shots, settings, flagged)
+    issues = merge_color_issues(shots, issues, measures, settings)
     return [i for i in issues if i.type not in skip]
+
+
+def _worst_frame_time(shots: Sequence[Shot], measure: Measurement) -> float | None:
+    """The time of the worst measured frame in the range, for the report's screenshot."""
+    valued = [(v, f.t) for f in (fr for sh in shots for fr in sh.frames)
+              if (v := measure.frame(f)) is not None]
+    if not valued:
+        return None
+    pick = max if measure.worse == "high" else min
+    return round(pick(valued, key=lambda pair: pair[0])[1], 3)
+
+
+def _merged_issue(run: Sequence[Issue], run_shots: Sequence[Shot], all_shots: Sequence[Shot],
+                  measures: dict[tuple[int, str], Measurement], settings: dict) -> Issue:
+    """One issue for a run of same-type flags: from the first to the last shot, with the typical
+    and worst measured value, the highest severity seen, and the worst frame for the screenshot.
+    A run covering most of the video (whole_video_share of its duration or of its shots) is said
+    once as "the whole video", with the client-file line that skips it: it may be the look."""
+    measures_in_run = [measures[(sh.number, run[0].type)] for sh in run_shots]
+    first, last = run_shots[0], run_shots[-1]
+    values = [m.value for m in measures_in_run]
+    lo, hi = min(values), max(values)
+    typical = median(values)
+    worst_value = max(values) if measures_in_run[0].worse == "high" else min(values)
+    worst = min(run, key=lambda i: SEVERITIES.index(i.severity))          # highest severity first
+    condition = worst.message.split(":", 1)[0]
+    span = f"{format_timestamp(first.start)} to {format_timestamp(last.end)}"
+    video_span = max((sh.end for sh in all_shots), default=0.0) - min((sh.start for sh in all_shots), default=0.0)
+    cover = (last.end - first.start) / video_span if video_span > 0 else 0.0
+    share = len(run) / max(1, len(all_shots))
+    if cover >= float(settings.get("whole_video_share", 0.8)) or share >= float(settings.get("whole_video_share", 0.8)):
+        message = (f"{condition} over the whole video ({span}, {measure_text(measures_in_run[0].text, lo, hi)}). "
+                   f"This may be the look the client wants, not a mistake - if so, skip it in that client's "
+                   f"file, clients/<CODE>.yaml: color: {{skip: [{run[0].type}]}}")
+    else:
+        message = f"{condition} from {span} ({measure_text(measures_in_run[0].text, lo, hi)})."
+    frames = sum(len(sh.frames) for sh in run_shots)
+    signals = (f"{len(run)} shots, {frames} frames; typical "
+               f"{measure_text(measures_in_run[0].text, typical, typical)}, worst "
+               f"{measure_text(measures_in_run[0].text, worst_value, worst_value)}")
+    return Issue(caption_id=shot_issue_id(first.number), timestamp=round(first.start, 3), type=run[0].type,
+                 severity=worst.severity,
+                 original=f"Shots {first.number}-{last.number}, {format_timestamp(first.start)} - "
+                          f"{format_timestamp(last.end)}",
+                 message=message, suggestion=worst.suggestion, confidence=max(i.confidence for i in run),
+                 signals=signals, screenshot_at=_worst_frame_time(run_shots, measures_in_run[0]))
+
+
+def merge_color_issues(shots: Sequence[Shot], issues: Sequence[Issue], measures: dict[tuple[int, str], Measurement],
+                       settings: dict) -> list[Issue]:
+    """One flag per problem, not one per shot: same-type flags on consecutive shots (no longer a
+    gap than merge_gap_sec between them) become one issue covering the range. A single flag, a
+    bigger gap, a change of type, and shot_mismatch keep the per-shot issue as it was."""
+    by_number = {sh.number: sh for sh in shots}
+    tolerance = float(settings.get("merge_gap_sec", 2.0))
+    groups: dict[str, list[Issue]] = {}
+    for issue in issues:
+        number = shot_number(issue.caption_id)
+        if issue.type in MERGE_TYPES and number in by_number:
+            groups.setdefault(issue.type, []).append(issue)
+    replacement: dict[int, Issue] = {}
+    dropped: set[int] = set()
+
+    def flush(run: list[Issue]) -> None:
+        if len(run) < 2:
+            return
+        run_shots = [by_number[shot_number(i.caption_id)] for i in run]
+        replacement[id(run[0])] = _merged_issue(run, run_shots, shots, measures, settings)
+        dropped.update(id(i) for i in run[1:])
+
+    for group in groups.values():
+        group.sort(key=lambda i: by_number[shot_number(i.caption_id)].start)
+        run: list[Issue] = []
+        for issue in group:
+            if run:
+                previous = by_number[shot_number(run[-1].caption_id)]
+                current = by_number[shot_number(issue.caption_id)]
+                if current.start - previous.end > tolerance:
+                    flush(run)
+                    run = []
+            run.append(issue)
+        flush(run)
+    return [replacement[id(i)] if id(i) in replacement else i for i in issues if id(i) not in dropped]
 
 
 # --- running it on a video, with a cache ---------------------------------------------------

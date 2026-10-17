@@ -9,7 +9,7 @@ from docx import Document
 
 from src.engine import (STAGES, QCError, QCOptions, build_docx_report, guess_client, known_clients, run_qc,
                         write_report)
-from src.models import Caption
+from src.models import Caption, SpokenWord, WRONG_WORD
 from src.utils.progress import Cancelled, Stage
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -138,3 +138,74 @@ def test_guess_client_from_the_file_name():
     assert guess_client(Path("E8DX reel.mp4"), known) is None              # not a whole code
     assert guess_client(Path("del.mp4"), known) is None
     assert "E8D" in known_clients()
+
+
+# --- the speech skip rule, through the engine -----------------------------------------------
+
+SPEECH_TYPES = {"wrong_word", "missing_word", "extra_word", "caption_early", "caption_late",
+                "caption_sync", "uncaptioned_speech"}
+
+
+def spoken(text: str, gap: float = 0.5, length: float = 0.35, probability: float = 0.9) -> list[SpokenWord]:
+    return [SpokenWord(word, i * gap, i * gap + length, probability) for i, word in enumerate(text.split())]
+
+
+def stub_speech(tmp_path, monkeypatch, words, captions):
+    """A fake video whose captions and transcript are what the test says."""
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake")
+    monkeypatch.setattr("src.engine.read_burned_in_captions", lambda *a, **kw: captions)
+    monkeypatch.setattr("src.engine.get_transcript", lambda *a, **kw: words)
+    return video
+
+
+def test_one_word_transcript_skips_the_speech_checks_but_not_the_others(tmp_path, monkeypatch):
+    video = stub_speech(tmp_path, monkeypatch, [SpokenWord("Yeah", 0.5, 0.7, 0.9)],
+                        [Caption(1, 0.0, 2.0, "i went to teh store")])
+    result = run_qc(video, None, options=QCOptions(use_llm=False))
+    assert not SPEECH_TYPES & {i.type for i in result}
+    assert any(note.startswith("Speech comparison skipped:") for note in result.notes)
+    assert any("Captions vs audio (Whisper): skipped (only 1 word" in line for line in result.checks)
+    assert any(line.startswith("Spelling and repeated words: ran") for line in result.checks)   # others still ran
+
+
+def test_a_normal_transcript_runs_the_speech_checks(tmp_path, monkeypatch):
+    caption = "i went to teh store and the market and home"
+    video = stub_speech(tmp_path, monkeypatch, spoken("i went to the store and the market and home"),
+                        [Caption(1, 0.0, 6.0, caption)])
+    result = run_qc(video, None, options=QCOptions(use_llm=False))
+    assert result.notes == []                                                     # nothing skipped
+    assert any("Captions vs audio (Whisper):" in line and "10 words heard" in line for line in result.checks)
+    assert WRONG_WORD in {i.type for i in result}                                 # the comparison really ran
+
+
+def test_a_video_with_no_audio_track_skips_the_comparison(tmp_path, monkeypatch):
+    video = tmp_path / "silent.mp4"
+    video.write_bytes(b"fake")
+    monkeypatch.setattr("src.engine.read_burned_in_captions", lambda *a, **kw: [Caption(1, 0.0, 1.0, "Hi there")])
+    monkeypatch.setattr("src.engine.has_audio", lambda *a, **kw: False)
+    asked = []
+    monkeypatch.setattr("src.engine.get_transcript", lambda *a, **kw: asked.append(1))
+    result = run_qc(video, None, options=QCOptions(use_llm=False))
+    assert asked == []                                                            # never transcribed
+    assert result.notes and "no audio track" in result.notes[0]
+
+
+def test_low_probability_words_skip_the_comparison(tmp_path, monkeypatch):
+    video = stub_speech(tmp_path, monkeypatch, spoken("word " * 40, probability=0.2),
+                        [Caption(1, 0.0, 5.0, "some caption here for the test")])
+    monkeypatch.setattr("src.engine.media_duration", lambda *a, **kw: 27.0)        # enough coverage, unsure words
+    result = run_qc(video, None, options=QCOptions(use_llm=False))
+    assert result.notes and "guesses over music" in result.notes[0]
+
+
+def test_speech_limits_can_be_overridden_for_a_client(tmp_path, monkeypatch):
+    caption = "one two three four five six seven eight nine ten eleven twelve"
+    video = stub_speech(tmp_path, monkeypatch, spoken(caption), [Caption(1, 0.0, 6.0, caption)])
+    monkeypatch.setattr("src.engine.media_duration", lambda *a, **kw: 27.0)
+    client = {"client": "E9Z", "overrides": {"transcript": {"min_words": 50}}}
+    monkeypatch.setattr("src.engine.load_client",
+                        lambda config, code: client if code else {"client": None, "overrides": {}})
+    assert run_qc(video, None, options=QCOptions(use_llm=False)).notes == []       # 12 >= 10: runs by default
+    strict = run_qc(video, "E9Z", options=QCOptions(use_llm=False))
+    assert strict.notes and "only 12 words" in strict.notes[0]                     # 12 < 50: the client's limit

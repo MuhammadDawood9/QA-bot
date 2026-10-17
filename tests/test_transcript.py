@@ -38,6 +38,17 @@ def kinds(issues):
     return [(i.caption_id, i.type) for i in issues]
 
 
+def test_too_little_speech_switches_the_whole_check_off():
+    """When the engine's speech gate says there was nothing reliable to compare, the check returns
+    nothing (the report carries the note instead) - and it leaves the transcript untouched."""
+    caps = [cap(1, 0.0, 2.0, "i went to teh store")]
+    words = said("i went to the store", 0.1)
+    context = CheckContext(transcript=words)
+    context.stats["speech"] = {"reason": "only 1 word in 27 s (coverage 4%)"}
+    assert transcript.check(caps, SETTINGS, context) == []
+    assert context.transcript == words                       # the gate never clears or shortens it
+
+
 # --- real examples from data/examples.csv ---------------------------------------------
 
 def test_wrong_word_are_for_or():                          # E3JB 00:01:47:19: "Or," not "Are."
@@ -270,8 +281,10 @@ def test_missing_video(tmp_path):
 
 def test_cli_with_video(monkeypatch, capsys, tmp_path):
     srt = tmp_path / "c.srt"
-    srt.write_text("1\n00:00:00,000 --> 00:00:02,000\nAre you just want to rest\n", encoding="utf-8")
-    monkeypatch.setattr("src.engine.get_transcript", lambda *a, **k: said("Or you just want to rest", 0.1))
+    srt.write_text("1\n00:00:00,000 --> 00:00:06,000\nAre you just want to rest here now with me tonight\n",
+                   encoding="utf-8")
+    monkeypatch.setattr("src.engine.get_transcript",
+                        lambda *a, **k: said("Or you just want to rest here now with me tonight", 0.1))
     (tmp_path / "v.mp4").write_bytes(b"fake video")
     assert main(["--srt", str(srt), "--video", str(tmp_path / "v.mp4"), "--no-llm"]) == 0
     out = capsys.readouterr().out
