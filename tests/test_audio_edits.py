@@ -261,7 +261,7 @@ def test_speech_skip_never_touches_the_audio_edit_checks(podcast, tmp_path, monk
 
 def test_audio_checks_can_be_switched_off_from_the_menu(podcast):
     path, _, _ = podcast
-    result = run_qc(path, "E2CL", options=QCOptions(disabled_checks=frozenset({"audio"})), config=CONFIG)
+    result = run_qc(path, "E2CL", options=QCOptions(disabled_checks=frozenset({"audio", "delivery"})), config=CONFIG)
     assert list(result) == [] and any("Audio edits: switched off" in line for line in result.checks)
 
 
@@ -270,7 +270,7 @@ def test_report_has_a_clip_and_a_waveform_per_audio_issue(podcast, tmp_path):
 
     path, _, _ = podcast
     config = {**CONFIG, "report": {**CONFIG["report"], "output_dir": str(tmp_path / "reports")}}
-    result = run_qc(path, "E2CL", config=config)
+    result = run_qc(path, "E2CL", config=config, options=QCOptions(disabled_checks=frozenset({"delivery"})))
     written = write_report(result, formats=["md", "docx"])
     folder = written[0].parent
     [clips] = [d for d in folder.iterdir() if d.is_dir() and d.name.endswith("_clips")]

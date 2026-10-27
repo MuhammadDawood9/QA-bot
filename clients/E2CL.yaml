@@ -136,3 +136,9 @@ audio_guidelines:
     enabled: false
     cues: []                     # e.g. {reference: intro_stinger.wav, at: start, within_sec: 30}
                                  #      {reference: outro_music.wav, at: end, within_sec: 60}
+
+# What this client orders (delivery checks, src/delivery/; every key is in config.yaml "delivery:").
+# Audio only: no picture spec.
+delivery:
+  loudness:
+    target_lufs: -16.0           # the usual podcast level (Apple Podcasts and most hosts)

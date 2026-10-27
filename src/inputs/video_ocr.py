@@ -220,10 +220,12 @@ def sample_frames(video: Path, fps: float) -> Iterator[tuple[float, float, objec
         yield t, duration, image
 
 
-def shared_frames(video: Path, rates: dict[str, float]) -> Iterator[tuple[float, float, object, list[str]]]:
+def shared_frames(video: Path, rates: dict[str, float],
+                  every_frame=None) -> Iterator[tuple[float, float, object, list[str]]]:
     """One decode of the video for several passes at their own rates: (time, video duration, RGB
     frame, names of the passes this frame is for). Each pass gets exactly the frames
-    sample_frames(video, its rate) would give it."""
+    sample_frames(video, its rate) would give it. every_frame(time, duration, av frame), if given,
+    is called for every decoded frame (the delivery checks' frame measurements)."""
     import av
     import numpy as np
 
@@ -244,6 +246,8 @@ def shared_frames(video: Path, rates: dict[str, float]) -> Iterator[tuple[float,
             t = frame.time
             if t is None:
                 continue
+            if every_frame is not None:
+                every_frame(t, duration, frame)
             due = [name for name in rates if t + 1e-6 >= next_t[name]]
             if not due:
                 continue
@@ -284,7 +288,8 @@ def save_captions(path: Path, video: Path, settings: dict, captions: Sequence[Ca
 def _save(path: Path, video: Path, settings: dict, captions: Sequence[Caption]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {"video": video.name, "settings": settings,
-            "captions": [[c.start, c.end, c.text, c.ocr_confidence] for c in captions]}
+            "captions": [[c.start, c.end, c.text, c.ocr_confidence, list(c.box) if c.box else None]
+                         for c in captions]}
     tmp = path.with_suffix(".tmp")
     with tmp.open("w", encoding="utf-8", newline="\n") as f:
         json.dump(data, f, ensure_ascii=False, indent=1, default=str)
@@ -295,8 +300,10 @@ def _load(path: Path) -> list[Caption] | None:
     try:
         with path.open(encoding="utf-8") as f:
             data = json.load(f)
-        return [Caption(id=i, start=s, end=e, text=t, source="ocr", ocr_confidence=c)
-                for i, (s, e, t, c) in enumerate(data["captions"], start=1)]
+        # [start, end, text, confidence, box]; caches from before boxes were kept have no box
+        return [Caption(id=i, start=row[0], end=row[1], text=row[2], source="ocr", ocr_confidence=row[3],
+                        box=tuple(row[4]) if len(row) > 4 and row[4] else None)
+                for i, row in enumerate(data["captions"], start=1)]
     except (OSError, ValueError, KeyError, TypeError):
         log.warning("cached OCR captions %s are unreadable; reading the video again", path.name)
         return None

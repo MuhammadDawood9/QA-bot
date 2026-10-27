@@ -60,6 +60,8 @@ class Reading:
     score: float
     top: float
     bottom: float
+    left: float | None = None       # None: not known (the safe-area check then skips the caption)
+    right: float | None = None
 
     @property
     def flat(self) -> str:
@@ -113,7 +115,8 @@ def group_boxes(boxes: Iterable[TextBox], block_gap_lines: float = 1.5) -> list[
         weights = [max(1, len(b.text)) for b in boxes_in]
         score = sum(b.score * w for b, w in zip(boxes_in, weights)) / sum(weights)
         readings.append(Reading(text=text, score=score, top=min(b.top for b in boxes_in),
-                                bottom=max(b.bottom for b in boxes_in)))
+                                bottom=max(b.bottom for b in boxes_in), left=min(b.left for b in boxes_in),
+                                right=max(b.right for b in boxes_in)))
     return readings
 
 
@@ -213,5 +216,13 @@ def build_captions(frames: Iterable[tuple[float, Sequence[Reading]]], frame_inte
         text, confidence = final_text(tr.readings)
         captions.append(Caption(id=len(captions) + 1, start=round(tr.first, 3),
                                 end=round(tr.last_seen + frame_interval, 3), text=text,
-                                source="ocr", ocr_confidence=confidence))
+                                source="ocr", ocr_confidence=confidence, box=track_box(tr.readings)))
     return captions
+
+
+def track_box(readings: Sequence[Reading]) -> tuple[float, float, float, float] | None:
+    """Everywhere a caption's text was on screen: (left, top, right, bottom), fractions of the frame."""
+    if any(r.left is None or r.right is None for r in readings):
+        return None
+    return (round(min(r.left for r in readings), 4), round(min(r.top for r in readings), 4),
+            round(max(r.right for r in readings), 4), round(max(r.bottom for r in readings), 4))

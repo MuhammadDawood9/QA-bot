@@ -12,3 +12,10 @@ client: E3JB
 project: Q2/Q3 2026 FAQ videos
 notes: 'Strict proofreading: verb forms, commas, "I" capital, duplicate words, 0 vs O.'
 overrides: {}
+
+# What this client orders (delivery checks, src/delivery/; every key is in config.yaml "delivery:").
+delivery:
+  spec:
+    aspect: "16:9"               # horizontal videos; any length
+  loudness:
+    target_lufs: -14.0           # YouTube / web

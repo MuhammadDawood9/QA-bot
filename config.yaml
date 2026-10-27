@@ -29,6 +29,7 @@ paths:
   transcript_cache_dir: cache/transcripts  # one Whisper transcript per video (by file hash)
   ocr_cache_dir: cache/ocr                 # captions read from each video (by file hash and OCR settings)
   color_cache_dir: cache/color             # color measurements per video
+  frames_cache_dir: cache/frames           # the delivery checks' per-frame measurements per video
   models_dir: models                       # Whisper models, downloaded on first use
 
 # Frame rate used to convert HH:MM:SS:FF timecodes (e.g. from ClickUp comments) to seconds.
@@ -365,6 +366,70 @@ audio_guidelines:
 # Color grading, measured shot by shot when a video is given (--no-color to skip). Every color
 # threshold, with what it means, and the per-client overrides (including each client's skip list)
 # are in color.yaml (paths.color_file).
+
+# Technical delivery checks (src/delivery/): the exported file itself, not what's in it. A client
+# sets what it ordered in a "delivery:" block in its client file, same keys (e.g. spec: {aspect:
+# "9:16", max_duration_sec: 60} for reels). --no-delivery on the command line skips them for one run.
+delivery:
+  enabled: true
+  spec:                            # what the client ordered; null = anything is fine
+    width: null                    # pixels, e.g. 1080
+    height: null                   # pixels, e.g. 1920
+    aspect: null                   # "9:16", "16:9", "1:1", "4:5" (the picture as shown, pixel aspect included)
+    aspect_tolerance: 0.01         # share the picture's aspect may differ from it
+    fps: null                      # one number or a list, e.g. [23.976, 24, 25, 29.97, 30]
+    fps_tolerance: 0.01            # share the frame rate may differ from one of them
+    min_duration_sec: null
+    max_duration_sec: null         # e.g. 60 for a reel
+    min_video_kbps: null           # below this the export is probably over-compressed (e.g. 8000 for 1080p)
+    audio_sample_rate: null        # e.g. 48000
+    audio_channels: null           # 1 = mono, 2 = stereo
+  loudness:                        # measured over the whole file (EBU R128, ffmpeg's loudnorm analysis)
+    enabled: true
+    target_lufs: -14.0             # integrated loudness: -14 YouTube / Spotify / TikTok / Instagram,
+                                   # -16 Apple Podcasts, -23 broadcast (EBU R128); null = not checked
+    tolerance_lu: 2.0              # flagged when further than this from the target
+    max_true_peak_dbtp: -1.0       # true peak above this distorts after the platform re-encodes; null = not checked
+  clipping:
+    enabled: true
+    level: 0.999                   # a sample at or above this (1.0 = full scale) counts as clipped
+    min_run_samples: 3             # this many clipped samples in a row in one channel = a clip (one alone is a peak)
+    merge_gap_sec: 1.0             # clips closer than this are one flag
+    max_flags: 10                  # the regions with the most clips; the rest are counted in the summary
+  voice_under_music:               # needs the speech transcript (checks.transcript, or the audio checks' own)
+    # EXPERIMENTAL, off by default: on a real two-person podcast the gaps between Whisper's words
+    # often hold the other speaker or the tail of a word, so it flagged clean speech about once a
+    # minute. Switch it on per client (delivery: {voice_under_music: {enabled: true}}) and check
+    # its flags with scripts/evaluate.py before trusting it.
+    enabled: false
+    window_sec: 5.0                # judged in windows this long
+    min_speech_sec: 1.0            # a window needs this much speech ...
+    min_gap_sec: 0.25              # ... and pauses between words at least this long ...
+    gap_margin_sec: 0.05           # (trimmed by this much at each end: word times are approximate)
+    min_background_sec: 0.4        # ... adding up to this much, to hear what's under the voice
+    min_voice_over_background_db: 6.0   # speech louder than the pauses around it by less than this = voice buried
+    quiet_background_db: -45.0     # pauses quieter than this (dBFS) have nothing to bury the voice: not flagged
+    merge_gap_sec: 2.0             # flagged windows this close are one flag
+    sample_rate: 16000             # the audio is measured at this rate (Hz)
+  picture:                         # every frame, shrunk and grey, during the one read of the video
+    enabled: true
+    analysis_width: 64             # pixels wide (changing it re-reads cached videos)
+    black_pixel_luma: 24           # a pixel this dark or darker (0-255) is black ...
+    black_share: 0.98              # ... and a frame with this share of black pixels is a black frame
+    min_black_sec: 0.1             # black this long is flagged ...
+    edge_black_sec: 1.0            # ... except at the very start or end, where up to this long is a fade
+    freeze_diff: 0.15              # mean change between frames (0-255 grey levels) below this = the same picture
+    min_freeze_sec: 2.0            # a picture frozen this long is flagged (raise it for clients with still slides)
+    flash_diff: 40.0               # frames this different from the frame before and after them ...
+    flash_neighbour_diff: 12.0     # ... where those two are this alike = a flash frame (a stray frame at a cut)
+    max_flash_frames: 2            # up to this many frames in a row (at most 3)
+  safe_area:                       # burned-in captions (OCR) under a platform's buttons; SRT captions have no position
+    enabled: auto                  # auto = vertical videos only (taller than wide); true; false
+    min_overlap: 0.1               # share of the caption's box inside a zone to flag it
+    zones:                         # fractions of the frame; roughly TikTok / Reels / Shorts, adjust per client
+      - {name: "bottom bar (caption and username)", left: 0.0, top: 0.80, width: 1.0, height: 0.20}
+      - {name: "right buttons (like, comment, share)", left: 0.84, top: 0.35, width: 0.16, height: 0.48}
+      - {name: "top bar", left: 0.0, top: 0.0, width: 1.0, height: 0.08}
 
 # The QC report (python -m src.main ... --report).
 report:

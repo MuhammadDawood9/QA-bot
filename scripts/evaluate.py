@@ -319,8 +319,8 @@ def caption_flags(video: Path, client_code: str, config: dict) -> tuple[list[Fla
 
     started = time.monotonic()
     try:
-        result = run_qc(video, client_code or None, options=QCOptions(use_llm=False, check_color=False),
-                        config=config)
+        result = run_qc(video, client_code or None, config=config,
+                        options=QCOptions(use_llm=False, check_color=False, disabled_checks=frozenset({"delivery"})))
     except QCError as exc:
         print(f"  {video.name}: captions not checked: {exc}")
         return [], 0.0, 0.0
@@ -351,7 +351,8 @@ def audio_flags(path: Path, client_code: str, config: dict, overrides: dict | No
         print(f"  {path.name}: the audio checks are off for client {client_code or 'default'}")
     try:
         result = run_qc(path, client_code or None, config=config,
-                        options=QCOptions(use_llm=False, check_color=False, audio_overrides=overrides or {}))
+                        options=QCOptions(use_llm=False, check_color=False, audio_overrides=overrides or {},
+                                          disabled_checks=frozenset({"delivery"})))
     except QCError as exc:
         print(f"  {path.name}: audio not checked: {exc}")
         return [], 0.0, 0.0

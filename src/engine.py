@@ -59,19 +59,21 @@ OCR_WEAK_SPOT_NOTE = " (Read by OCR, which can miss spaces and mix up commas and
 # "Reading the video" is one decode for the captions, the on-screen text and the color together
 # (src/inputs/video_pass.py); the stages after it then mostly load what it stored.
 STAGES = [
-    ("Reading the video", 0.62),
+    ("Reading the video", 0.58),
     ("Reading captions", 0.02),
     ("Reading on-screen text", 0.02),
     ("Transcribing audio", 0.17),
     ("Checking captions", 0.15),
     ("Checking color", 0.02),
     ("Checking audio edits", 0.0),          # videos only when the client switches audio checks on
+    ("Checking delivery", 0.04),            # loudness, clipping, format; the frames were measured while reading
 ]
 # An audio file (podcast): no picture to read; the time goes into the speech and the audio checks.
 AUDIO_STAGES = [
-    ("Transcribing audio", 0.6),
-    ("Checking audio edits", 0.35),
+    ("Transcribing audio", 0.55),
+    ("Checking audio edits", 0.3),
     ("Checking captions", 0.05),
+    ("Checking delivery", 0.1),
 ]
 
 
@@ -85,7 +87,7 @@ class QCOptions:
     srt_path: Path | None = None             # use this caption file instead of reading the captions off the video
     use_llm: bool = True                     # the punctuation check (Anthropic API, costs money)
     check_color: bool = True
-    disabled_checks: frozenset[str] = frozenset()    # names from src.checks.CHECKS, or "color", "audio"
+    disabled_checks: frozenset[str] = frozenset()    # names from src.checks.CHECKS, or "color", "audio", "delivery"
     cue_sheet: Path | None = None            # an audio episode's cue sheet; default <episode>.cues.csv next to it
     audio_overrides: dict = field(default_factory=dict)   # laid over the client's audio settings (evaluation)
     config_path: Path | None = None          # default: config.yaml next to src/
@@ -189,6 +191,11 @@ def run_qc(video_path: str | Path | None, client: str | None = None,
         stage(0.0)
         issues += _audio_edits(video, config, client_data, context, options, stage, audio_only=False)
         stage(1.0)
+
+        stage = stages["Checking delivery"]
+        stage(0.0)
+        issues += _delivery(video, config, client_data, context, options, stage, captions, context.transcript)
+        stage(1.0)
     except (Cancelled, QCError):
         raise
     except (SrtError, OcrError, MissingToolError) as exc:
@@ -263,6 +270,11 @@ def _run_audio_file(path: Path, srt: Path | None, config: dict, client: dict, co
                 resolve_path(config, "transcript_cache_dir"), model_dirs(config))
             _speech_gate(path, context)
         issues += run_checks(captions, config, client, context, stage=stages["Checking captions"])
+        stage = stages["Checking delivery"]
+        stage(0.0)
+        issues += _delivery(path, config, client, context, options, stage, captions, words or context.transcript,
+                            audio_only=True)
+        stage(1.0)
     except (Cancelled, QCError):
         raise
     except (SrtError, MissingToolError) as exc:
@@ -382,6 +394,36 @@ def _audio_edits(path: Path | None, config: dict, client: dict, context: CheckCo
     return issues
 
 
+def _delivery_settings(video: Path | None, config: dict, client: dict, options: QCOptions) -> dict | None:
+    """The delivery settings when the delivery checks run on this run, else None."""
+    from src.delivery import delivery_settings
+
+    settings = delivery_settings(config, client)
+    if video is None or "delivery" in options.disabled_checks or not settings.get("enabled", True):
+        return None
+    return settings
+
+
+def _delivery(path: Path | None, config: dict, client: dict, context: CheckContext, options: QCOptions,
+              stage: Stage, captions: Sequence[Caption], words, audio_only: bool = False) -> list[Issue]:
+    """Loudness, clipping, voice under music, file format, black / frozen / flash frames and the
+    safe area (src/delivery/). A failing part is noted in the stats; the rest still runs."""
+    settings = _delivery_settings(path, config, client, options)
+    if settings is None:
+        if path is not None and "delivery" in options.disabled_checks:
+            context.stats["delivery"] = {"skipped": "switched off for this run"}
+        return []
+    from src.delivery import check_delivery
+
+    ffmpeg = find_ffmpeg(config.get("machine", {}).get("ffmpeg_path"))
+    issues, stats = check_delivery(path, settings, ffmpeg=ffmpeg, captions=captions, words=words,
+                                   audio_only=audio_only, picture_cache=resolve_path(config, "frames_cache_dir"),
+                                   progress=stage)
+    context.stats["delivery"] = stats
+    log.info("delivery: %d issue(s)", len(issues))
+    return issues
+
+
 def _ignored(issues: list[Issue], config: dict, client: dict, video: Path | None) -> tuple[list[Issue], list[Issue]]:
     """Issues minus the ones ignore.yaml hides; (kept, hidden)."""
     rules = ignore.load_rules(ignore.ignore_file(config))
@@ -425,8 +467,12 @@ def _read_video_once(video: Path, srt: Path | None, config: dict, client: dict, 
                      options: QCOptions, stage: Stage) -> None:
     """Decode the video once for every pass over the picture that isn't cached yet. If that fails,
     the passes read the video one by one afterwards, as before, and report their own errors."""
+    from src.delivery import picture_settings
+
     ocr = ocr_settings(config, client)
     color = _color_checked(video, config, client, options)
+    delivery = _delivery_settings(video, config, client, options)
+    picture = picture_settings(delivery) if delivery is not None else None
     try:
         if color is not None and hdr_transfer(video):
             color = None                                   # not measured; _color says why
@@ -436,7 +482,8 @@ def _read_video_once(video: Path, srt: Path | None, config: dict, client: dict, 
                         known_captions=load_srt(srt) if srt is not None else None, color=color,
                         caption_region=None if region == FULL_FRAME else region,
                         color_cache=resolve_path(config, "color_cache_dir"),
-                        models_dir=model_dirs(config), progress=stage)
+                        models_dir=model_dirs(config), progress=stage, picture=picture,
+                        picture_cache=resolve_path(config, "frames_cache_dir") if picture is not None else None)
     except (OSError, OcrError, SrtError, ValueError) as exc:
         log.warning("couldn't read %s in one pass (%s); reading it pass by pass", video.name, exc)
 
@@ -613,6 +660,7 @@ def check_status_lines(context: CheckContext, video: Path | None, options: QCOpt
             lines.append(f"Reference cues looked for: {', '.join(audio['references'])}")
     elif context.stats.get("audio_file"):
         lines.append("Audio edits: off for this client")
+    lines += _delivery_lines(context)
     if audio_file:
         lines.append("Picture checks (captions in the picture, on-screen text, color): not run (audio file)")
         return lines
@@ -627,6 +675,33 @@ def check_status_lines(context: CheckContext, video: Path | None, options: QCOpt
         lines.append("Color grading: switched off for this run")
     else:
         lines.append("Color grading: off in config")
+    return lines
+
+
+def _delivery_lines(context: CheckContext) -> list[str]:
+    stats = context.stats.get("delivery")
+    if not stats:
+        return []
+    if stats.get("skipped"):
+        return [f"Delivery: {stats['skipped']}"]
+    parts = [stats.get("file") or "file not read"]
+    loud = stats.get("loudness")
+    if loud:
+        parts.append(f"{loud['integrated']:.1f} LUFS, true peak {loud['true_peak']:.1f} dBTP")
+    if "clips" in stats:
+        clips = stats["clips"]
+        parts.append(f"{clips} clipped spot" + ("" if clips == 1 else "s"))
+    if "frames" in stats:
+        parts.append(f"{stats['frames']} frames checked")
+    safe = stats.get("safe_area")
+    if safe:
+        parts.append(f"safe area: {safe['checked']} captions checked"
+                     + (f", {safe['unknown']} without a position (re-read the video to check them)"
+                        if safe["unknown"] else ""))
+    if isinstance(stats.get("voice_under_music"), str):
+        parts.append(f"voice under music {stats['voice_under_music']}")
+    lines = ["Delivery: " + "; ".join(parts)]
+    lines += [f"Delivery check not run: {e}" for e in stats.get("errors") or []]
     return lines
 
 

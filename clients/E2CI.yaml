@@ -14,3 +14,10 @@ notes: Subtitles plain white text with drop shadow "as per the manual".
 overrides: {}
 ocr:
   ignore_patterns: ['day \d+']     # the "day 07" title is not a caption
+
+# What this client orders (delivery checks, src/delivery/; every key is in config.yaml "delivery:").
+delivery:
+  spec:
+    aspect: "16:9"               # horizontal videos; any length
+  loudness:
+    target_lufs: -14.0           # YouTube / web

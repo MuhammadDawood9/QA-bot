@@ -28,3 +28,9 @@ overrides: {}
 audio:
   enabled: true                  # on for this client's audio files and videos
   sensitivity: medium            # low / medium / high
+
+# What this client orders (delivery checks, src/delivery/; every key is in config.yaml "delivery:").
+# Audio only: no picture spec.
+delivery:
+  loudness:
+    target_lufs: -16.0           # the usual podcast level (Apple Podcasts and most hosts)

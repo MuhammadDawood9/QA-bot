@@ -19,7 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
 
-from src.models import AUDIO_ISSUES, SEVERITIES, Caption, Issue, audio_number, shot_number
+from src.models import (AUDIO_ISSUES, DELIVERY_AUDIO_ISSUES, DELIVERY_FILE_ISSUES, SEVERITIES, Caption, Issue,
+                        audio_number, delivery_number, shot_number)
 from src.report.screenshots import grab_frame
 from src.utils.timecode import format_timestamp
 
@@ -55,6 +56,15 @@ LABELS = {
     "jump_cut": "Jump cut (audio)",
     "dead_air": "Dead air (audio)",
     "filler": "Filler word (audio)",
+    "delivery_spec": "Not as ordered (delivery)",
+    "loudness": "Loudness (delivery)",
+    "true_peak": "True peak (delivery)",
+    "clipping": "Clipping (delivery)",
+    "voice_under_music": "Voice under music (delivery)",
+    "black_frames": "Black frames (delivery)",
+    "frozen_picture": "Frozen picture (delivery)",
+    "flash_frame": "Flash frame (delivery)",
+    "safe_area": "Outside the safe area (delivery)",
 }
 _RANK = {s: i for i, s in enumerate(SEVERITIES)}          # high = 0 (worst)
 CSV_COLUMNS = ["timestamp", "seconds", "caption_id", "type", "severity", "caption", "problem",
@@ -98,6 +108,8 @@ def caption_title(cid: int) -> str:
     shot = shot_number(cid)
     if shot is not None:
         return f"shot {shot}"
+    if delivery_number(cid) is not None:
+        return "delivery"
     return "audio" if audio_number(cid) is not None else "no caption"
 
 
@@ -107,6 +119,8 @@ def caption_anchor(cid: int) -> str:
     shot = shot_number(cid)
     if shot is not None:
         return f"shot-{shot}"
+    if delivery_number(cid) is not None:
+        return f"delivery-{delivery_number(cid)}"
     n = audio_number(cid)
     return f"audio-{n}" if n is not None else f"no-caption-{-cid}"
 
@@ -213,7 +227,7 @@ class ReportData:
 
     @property
     def has_audio(self) -> bool:
-        return bool(self.clips) or any(i.type in AUDIO_ISSUES for i in self.issues)
+        return bool(self.clips) or any(i.type in AUDIO_ISSUES | DELIVERY_AUDIO_ISSUES for i in self.issues)
 
     def counts(self) -> Counter:
         return Counter((i.type, i.severity) for i in self.issues)
@@ -250,7 +264,9 @@ def prepare(captions: Sequence[Caption], issues: Sequence[Issue], info: ReportIn
         clip_dir = clips_folder_name(info)
         for cid in flagged:
             first = by_caption[cid][0]
-            if first.type in AUDIO_ISSUES:
+            if first.type in DELIVERY_FILE_ISSUES:
+                continue                                   # about the whole file: no moment to show
+            if first.type in AUDIO_ISSUES | DELIVERY_AUDIO_ISSUES:
                 at = first.timestamp
                 base = f"{int(round(at * 1000)):08d}_{first.type}"
                 mp3, png = f"{clip_dir}/{base}.mp3", f"{clip_dir}/{base}.png"
