@@ -8,8 +8,9 @@ with the flagged point marked (instead of the screenshot a video issue gets).
 from __future__ import annotations
 
 import logging
-import subprocess
 from pathlib import Path
+
+from src.utils.system import run_ffmpeg
 
 log = logging.getLogger("qcbot.report")
 
@@ -27,7 +28,7 @@ def write_clip(ffmpeg: str, source: Path, at: float, out: Path, seconds: float =
     cmd = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{start:.3f}", "-t", f"{length:.3f}",
            "-i", str(source), "-vn", "-ac", "1", "-ar", "22050", "-codec:a", "libmp3lame", "-b:a", "64k",
            "-af", "afade=t=in:d=0.05,areverse,afade=t=in:d=0.05,areverse", str(out)]
-    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    result = run_ffmpeg(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0 or not out.is_file():
         log.warning("no audio clip at %.2f s: %s", at, result.stderr.strip()[-200:])
         return False

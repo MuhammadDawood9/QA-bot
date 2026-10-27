@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
-import subprocess
 from pathlib import Path
+
+from src.utils.system import run_ffmpeg
 
 log = logging.getLogger("qcbot.report")
 
@@ -15,7 +16,7 @@ def grab_frame(ffmpeg: str, video: Path, seconds: float, out: Path, width: int =
     cmd = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
            "-ss", f"{max(0.0, seconds):.3f}", "-i", str(video),        # -ss before -i: fast seek
            "-frames:v", "1", "-vf", f"scale={int(width)}:-2", "-q:v", "3", str(out)]
-    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    result = run_ffmpeg(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0 or not out.is_file():
         log.warning("no screenshot at %.3f s: %s", seconds, (result.stderr or "no frame there").strip()[-200:])
         return False

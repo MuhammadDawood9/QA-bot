@@ -70,6 +70,9 @@ def apply_machine_defaults(config: dict) -> dict:
         chosen["whisper_model_size"] = "auto"
     chosen["ram_gb"] = ram if ram is not None else ram_gb()
     config["_machine"] = chosen
+    from src.utils.system import set_ffmpeg_timeout
+
+    set_ffmpeg_timeout(machine.get("ffmpeg_timeout_sec"))
     return config
 
 

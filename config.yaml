@@ -3,13 +3,16 @@
 # under "overrides:", using the same structure as the "checks:" block below.
 
 # --- Machine-specific settings ---
-# On the QC floor each PC can override these in its own local.yaml (Settings > Speech model), so one
-# shared config.yaml suits every PC.
+# On the QC floor this block is read from the app's own config.yaml and each PC's local.yaml
+# (Settings > Speech model) only; a machine: block in the SHARED config.yaml is ignored, because
+# ffmpeg_path names a program every PC would run.
 machine:
   whisper_model_size: auto     # auto = picked from the CPU and memory (base under 4 cores or 8 GB, else small);
                                # or tiny / base / small / medium
   cpu_threads: auto            # auto = half the cores, so editing on the same PC stays smooth; or a number
   ffmpeg_path: null            # null = find "ffmpeg" on PATH; or the full path to the ffmpeg program
+  ffmpeg_timeout_sec: 900      # one ffmpeg call (audio of a whole video, a frame, a clip) is stopped after this
+                               # long, so a damaged video can't hang the check; null or 0 = no limit
 
 paths:
   rules_file: rules.yaml

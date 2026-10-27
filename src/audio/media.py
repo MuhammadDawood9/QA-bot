@@ -10,8 +10,9 @@ and a long pause in a podcast with room tone is never "silent".
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
+
+from src.utils.system import run_ffmpeg
 
 AUDIO_EXTENSIONS = (".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wma", ".aif", ".aiff")
 
@@ -85,7 +86,7 @@ def load_audio(path: Path, ffmpeg: str, sample_rate: int = 16000, start: float |
     if duration is not None:
         cmd += ["-t", f"{duration:.3f}"]
     cmd += ["-vn", "-ac", "1", "-ar", str(int(sample_rate)), "-f", "f32le", "-acodec", "pcm_f32le", "-"]
-    result = subprocess.run(cmd, capture_output=True)
+    result = run_ffmpeg(cmd, capture_output=True)
     if result.returncode != 0:
         message = result.stderr.decode("utf-8", errors="replace").strip()[-400:]
         raise RuntimeError(f"ffmpeg could not read the audio of {Path(path).name}: {message}")

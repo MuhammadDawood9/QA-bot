@@ -1,6 +1,7 @@
 import csv
 import datetime as dt
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -162,7 +163,7 @@ def test_grab_frame_uses_an_argument_list(monkeypatch, tmp_path):
         from PIL import Image
         Image.new("RGB", (8, 8)).save(tmp_path / "f.jpg", "JPEG")
         return type("R", (), {"returncode": 0, "stderr": ""})()
-    monkeypatch.setattr(screenshots.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
     assert screenshots.grab_frame("ffmpeg", Path("my clip.mp4"), 3.1, tmp_path / "f.jpg", 480)
     cmd = seen["cmd"]
     assert cmd[cmd.index("-ss") + 1] == "3.100" and cmd.index("-ss") < cmd.index("-i")
@@ -170,7 +171,7 @@ def test_grab_frame_uses_an_argument_list(monkeypatch, tmp_path):
 
 
 def test_grab_frame_failure_is_not_fatal(monkeypatch, tmp_path):
-    monkeypatch.setattr(screenshots.subprocess, "run",
+    monkeypatch.setattr(subprocess, "run",
                         lambda cmd, **kw: type("R", (), {"returncode": 1, "stderr": "seek past end"})())
     assert screenshots.grab_frame("ffmpeg", Path("v.mp4"), 999, tmp_path / "f.jpg") is False
 

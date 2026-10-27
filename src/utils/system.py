@@ -19,6 +19,28 @@ class MissingToolError(RuntimeError):
     pass
 
 
+_ffmpeg_timeout: float | None = None       # machine.ffmpeg_timeout_sec, set by load_config
+
+
+def set_ffmpeg_timeout(seconds) -> None:
+    """How long one ffmpeg call may run (machine.ffmpeg_timeout_sec). None or 0 = no limit."""
+    global _ffmpeg_timeout
+    _ffmpeg_timeout = float(seconds) if seconds and float(seconds) > 0 else None
+
+
+def run_ffmpeg(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """subprocess.run, stopped after machine.ffmpeg_timeout_sec: a damaged video can make ffmpeg
+    hang. A timeout comes back as a failed run (returncode -1, the reason in stderr), so callers
+    handle it like any other ffmpeg failure."""
+    try:
+        return subprocess.run(cmd, timeout=_ffmpeg_timeout, **kwargs)
+    except subprocess.TimeoutExpired:
+        reason = f"ffmpeg was stopped after {_ffmpeg_timeout:g} s (machine.ffmpeg_timeout_sec)"
+        if kwargs.get("text") or kwargs.get("encoding"):
+            return subprocess.CompletedProcess(cmd, -1, "", reason)
+        return subprocess.CompletedProcess(cmd, -1, b"", reason.encode("utf-8"))
+
+
 def bundled_ffmpeg() -> str | None:
     """The ffmpeg that ships inside the app (the imageio-ffmpeg package: a static build for Windows,
     macOS Intel and Apple Silicon), or None."""
@@ -55,8 +77,10 @@ def find_ffmpeg(configured: str | None = None) -> str:
 
 def ffmpeg_version(configured: str | None = None) -> str:
     """First line of `ffmpeg -version`."""
-    result = subprocess.run([find_ffmpeg(configured), "-version"], capture_output=True, text=True,
-                            encoding="utf-8", errors="replace", check=True)
+    cmd = [find_ffmpeg(configured), "-version"]
+    result = run_ffmpeg(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
     return result.stdout.splitlines()[0] if result.stdout else ""
 
 
@@ -65,7 +89,7 @@ def extract_audio(video: Path, wav: Path, ffmpeg: str, sample_rate: int = 16000)
     wav.parent.mkdir(parents=True, exist_ok=True)
     cmd = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
            "-i", str(video), "-vn", "-ac", "1", "-ar", str(sample_rate), "-c:a", "pcm_s16le", str(wav)]
-    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    result = run_ffmpeg(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg could not extract audio from {video.name}: {result.stderr.strip()[-500:]}")
     return wav

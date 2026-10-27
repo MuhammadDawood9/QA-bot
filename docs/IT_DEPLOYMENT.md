@@ -124,7 +124,9 @@ environment on the PCs where an admin chooses to allow them.)
 ## 4. Models and ffmpeg: no downloads on the floor
 
 - **ffmpeg** is inside the app (the `imageio-ffmpeg` package: a static build for Windows, macOS Intel
-  and Apple Silicon). Nothing to install. A `machine.ffmpeg_path` in `config.yaml` overrides it.
+  and Apple Silicon). Nothing to install. A `machine.ffmpeg_path` in that PC's `local.yaml` overrides it
+  (the `machine:` block of the shared `config.yaml` is ignored, so the shared folder can't choose a
+  program for every PC to run).
 - **OCR models** are inside the app.
 - **Whisper speech models** (base 145 MB, small 465 MB) and the **face model** (232 KB): prepare them
   once on any PC with internet access, then copy to the shared models folder:

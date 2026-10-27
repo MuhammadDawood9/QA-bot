@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import copy
+import logging
 import re
 import sys
 import warnings
 from pathlib import Path
 
 import yaml
+
+log = logging.getLogger("qcbot.config")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG = PROJECT_ROOT / "config.yaml"
@@ -127,7 +130,13 @@ def _shared_config(floor) -> dict:
     config = load_yaml(shipped) if shipped.is_file() else {}
     on_floor = floor.data_root / "config.yaml"
     if on_floor.is_file():
-        config = deep_merge(config, load_yaml(on_floor))
+        floor_config = load_yaml(on_floor)
+        # machine: is this PC's own (the app's config.yaml, then local.yaml). From the shared file,
+        # anyone who can write there could pick the program every PC runs as ffmpeg.
+        machine = floor_config.pop("machine", None)
+        if isinstance(machine, dict) and machine.get("ffmpeg_path"):
+            log.warning("ignored machine.ffmpeg_path in the shared config.yaml: set it in this PC's local.yaml")
+        config = deep_merge(config, floor_config)
     config["_root"] = floor.data_root
     config["_local_root"] = floor.local_dir
     config["_app_root"] = app_dir()

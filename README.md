@@ -316,8 +316,9 @@ python -m src.app --demo     # also a menu to preview the four mascot states
 ## Configuration
 
 - **`config.yaml`** holds every threshold. The `machine:` block at the top holds the
-  settings that differ between machines (Whisper model size, CPU threads, ffmpeg path).
-  Edit only that block when moving to the MacBook.
+  settings that differ between machines (Whisper model size, CPU threads, ffmpeg path and how
+  long one ffmpeg call may run). Edit only that block when moving to the MacBook. On the QC floor
+  that block comes from each PC's `local.yaml`; the shared `config.yaml`'s `machine:` block is ignored.
 - **`clients/<CLIENT>.yaml`** holds per-client overrides. Anything under `overrides:` replaces
   the matching value in `config.yaml`'s `checks:` block:
   ```yaml
