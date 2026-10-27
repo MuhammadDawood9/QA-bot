@@ -48,10 +48,27 @@ FILLER = "filler"
 MISSING_CUE = "missing_cue"          # a cue the client's audio guidelines require isn't there (off by default)
 AUDIO_ISSUES = {STUTTER, REPEATED_PHRASE, ABRUPT_CUT, JUMP_CUT, DEAD_AIR, FILLER, MISSING_CUE}
 
+# Technical delivery (src/delivery/): the exported file itself
+DELIVERY_SPEC = "delivery_spec"            # resolution, aspect, frame rate, duration, bitrate, audio format
+LOUDNESS = "loudness"                      # integrated loudness off the platform's target
+TRUE_PEAK = "true_peak"
+CLIPPING = "clipping"
+VOICE_UNDER_MUSIC = "voice_under_music"
+BLACK_FRAMES = "black_frames"
+FROZEN_PICTURE = "frozen_picture"
+FLASH_FRAME = "flash_frame"
+SAFE_AREA = "safe_area"                    # burned-in text under a platform's buttons (tied to its caption)
+DELIVERY_ISSUES = {DELIVERY_SPEC, LOUDNESS, TRUE_PEAK, CLIPPING, VOICE_UNDER_MUSIC, BLACK_FRAMES, FROZEN_PICTURE,
+                   FLASH_FRAME, SAFE_AREA}
+DELIVERY_FILE_ISSUES = {DELIVERY_SPEC, LOUDNESS, TRUE_PEAK}          # about the whole file: no screenshot
+DELIVERY_AUDIO_ISSUES = {CLIPPING, VOICE_UNDER_MUSIC}                # the report plays a clip, like audio edits
+
 # Issues that aren't about a caption have negative caption ids: -1, -2... for speech with no
-# caption, -1001, -1002... for shot 1, 2... of the color checks, -3001, -3002... for audio issues.
+# caption, -1001, -1002... for shot 1, 2... of the color checks, -3001, -3002... for audio issues,
+# -5001, -5002... for delivery issues.
 SHOT_ID_BASE = 1000
 AUDIO_ID_BASE = 3000                 # audio issue n: -3000 - n
+DELIVERY_ID_BASE = 5000              # delivery issue n: -5000 - n
 
 
 def shot_issue_id(shot_number: int) -> int:
@@ -69,7 +86,16 @@ def audio_issue_id(n: int) -> int:
 
 def audio_number(caption_id: int) -> int | None:
     """The number of an audio issue's id, None for any other id."""
-    return -caption_id - AUDIO_ID_BASE if caption_id <= -AUDIO_ID_BASE else None
+    return -caption_id - AUDIO_ID_BASE if -DELIVERY_ID_BASE < caption_id <= -AUDIO_ID_BASE else None
+
+
+def delivery_issue_id(n: int) -> int:
+    return -(DELIVERY_ID_BASE + n)
+
+
+def delivery_number(caption_id: int) -> int | None:
+    """The number of a delivery issue's id, None for any other id."""
+    return -caption_id - DELIVERY_ID_BASE if caption_id <= -DELIVERY_ID_BASE else None
 
 SEVERITIES = ("high", "medium", "low")
 
@@ -82,6 +108,8 @@ class Caption:
     text: str             # line breaks inside one caption are kept as "\n"
     source: str = "srt"   # "srt" or "ocr"
     ocr_confidence: float | None = None   # OCR captions only: how sure the reading is (0..1)
+    box: tuple[float, float, float, float] | None = None   # OCR captions only: (left, top, right, bottom)
+                                                           # as fractions of the frame; None = not known
 
     @property
     def duration(self) -> float:

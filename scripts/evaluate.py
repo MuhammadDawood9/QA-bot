@@ -7,8 +7,10 @@
     python scripts/evaluate.py --checks audio --audio-tolerance 1.5      # podcasts (E2CL)
     python scripts/evaluate.py --checks audio --compare-suppression      # and again without the overlap /
                                                                            # music / effect suppression
+    python scripts/evaluate.py --note-lag 5         # also count notes written up to 5 s after the flag
+    python scripts/evaluate.py --assume-reviewed    # treat every video as fully reviewed (old behaviour)
 
-data/ground_truth.csv columns: video, timestamp, client, issue_type, note_text
+data/ground_truth.csv columns: video, timestamp, client, issue_type, note_text (and optionally review)
   video       the video's file name (looked up under --videos, recursively) or a full path
   timestamp   as you wrote it: 00:00:19:59, 0:29, 24:37, 00;10;17;08, or a range 2:04-2:15.
               Leave it empty for a note about the whole video ("fix color grade").
@@ -26,6 +28,16 @@ data/ground_truth.csv columns: video, timestamp, client, issue_type, note_text
               A video with no notes at all can be listed with an empty timestamp and issue_type
               "none": it then only counts toward false alarms.
   note_text   your comment, shown next to misses so you can look at each one
+  review      "full" on any one row of a video: every problem in it was noted, so a flag there that
+              matches no note really is a false alarm. Videos without it were reviewed only in part
+              (a revision round with 1-2 notes): their unmatched flags may be real problems nobody wrote
+              down, so they don't count toward precision. A video listed with issue_type "none" is
+              fully reviewed too.
+
+data/flag_labels.csv (--labels): your verdict on single flags, which beats the notes. Every run writes
+flags_to_label.csv with every flag (verdicts carried over from the labels file); fill its verdict
+column (real, wrong, or minor = right but you'd never comment) and save it as data/flag_labels.csv.
+A label applies to the flag of the same video and type nearest its time, within --label-window s.
 
 Matching: a flag matches a note when the note's time (or range) falls inside the flagged caption
 or shot, widened by --tolerance seconds on each side. Caption notes are matched only by caption
@@ -34,12 +46,20 @@ of any type in its area. Per check type:
   recall      notes of that type that some flag of that type matched / notes of that type
               (the "all captions" / "all color" rows: every timed note of the area, matched by
               any flag of the area)
-  precision   flags of that type that match a note of that type or a generic note / all flags
-  FP / min    flags that match no note, per minute of evaluated video
+  recall +lag the same, also counting a note written up to --note-lag s after the flagged moment
+              (a reviewer types the note after hearing or seeing the problem). Shown apart so the
+              strict number stays comparable between runs.
+  chance      the recall flags placed at random would get (chance +lag: with the note lag): per note,
+              the share of its video's time inside some flag's match window, averaged. Recall near
+              chance means the flags land on notes by luck, not because they find the problem.
+  judged      flags whose truth is known: labelled, or in a fully reviewed video
+  precision   judged flags that are real (labelled real or minor, or else matching a note of that
+              type or a generic note) / judged flags
+  FP / min    judged flags that aren't real, per minute of fully reviewed video
 Notes without a timestamp can't be matched to a moment; they're listed separately with whether
 the bot flagged anything at all in that video.
 
-Writes reports/evaluation_<date-time>/: evaluation.md, misses.csv, false_alarms.csv.
+Writes reports/evaluation_<date-time>/: evaluation.md, misses.csv, false_alarms.csv, flags_to_label.csv.
 Thresholds are not changed by this script.
 """
 
@@ -103,6 +123,12 @@ def area(kind: str) -> str:
 def generic(area_name: str) -> str:
     return {"caption": CAPTION_GENERIC, "audio": AUDIO_GENERIC}.get(area_name, "color_grading")
 COLUMNS = ["video", "timestamp", "client", "issue_type", "note_text"]
+FULL_REVIEW = {"full", "complete", "yes", "y", "true", "1"}
+LABEL_COLUMNS = ["video", "timestamp", "seconds", "issue_type", "message", "matches_note", "verdict", "comment"]
+REAL, WRONG, MINOR = "real", "wrong", "minor"
+VERDICTS = {"real": REAL, "yes": REAL, "y": REAL, "tp": REAL, "true": REAL, "1": REAL,
+            "wrong": WRONG, "no": WRONG, "n": WRONG, "fp": WRONG, "false": WRONG, "0": WRONG,
+            "minor": MINOR, "real but minor": MINOR, "valid": MINOR}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mxf", ".m4v", ".mkv", ".avi", ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
 
 
@@ -116,6 +142,8 @@ class Note:
     start: float | None = None      # None: about the whole video
     end: float | None = None
     matched_by: list[Issue] = field(default_factory=list)
+    late_by: list[Issue] = field(default_factory=list)     # flags it matches only with --note-lag
+    review: str = ""                # "full": every problem in this video was noted
 
     @property
     def area(self) -> str:
@@ -129,6 +157,8 @@ class Flag:
     start: float                    # the flagged caption or shot (or moment)
     end: float
     matches: list[Note] = field(default_factory=list)
+    verdict: str | None = None      # from data/flag_labels.csv: real, wrong or minor
+    window: tuple[float, float, float] | None = None    # set by match: (lo, hi, hi with the note lag)
 
     @property
     def kind(self) -> str:
@@ -161,7 +191,8 @@ def read_truth(path: Path, fps: float) -> tuple[list[Note], list[str]]:
                 problems.append(f"line {n}: issue_type {kind!r} isn't a type the bot checks; counted as color_grading")
                 kind = "color_grading"
             note = Note(video, (row.get("timestamp") or "").strip(), normalize_client_code(row.get("client")) or "",
-                        kind, (row.get("note_text") or "").strip())
+                        kind, (row.get("note_text") or "").strip(),
+                        review="full" if (row.get("review") or "").strip().lower() in FULL_REVIEW else "")
             if note.stamp:
                 try:
                     start, end = parse_range(note.stamp, fps=infer_fps(note.stamp, fps))
@@ -170,6 +201,75 @@ def read_truth(path: Path, fps: float) -> tuple[list[Note], list[str]]:
                     problems.append(f"line {n}: {exc}; treated as a note about the whole video")
             notes.append(note)
     return notes, problems
+
+
+def reviewed_videos(notes: list[Note]) -> set[str]:
+    """Videos whose every problem was noted: "full" in the review column of any of their rows, or
+    listed with issue_type "none" (nothing to note). Call before notes are set aside for a run."""
+    return {n.video for n in notes if n.review == "full" or n.kind == "none"}
+
+
+# --- labels: your verdict on single flags ---------------------------------------------------
+
+@dataclass
+class Label:
+    video: str
+    seconds: float
+    issue_type: str
+    verdict: str
+    comment: str = ""
+
+
+def read_labels(path: Path) -> tuple[list[Label], list[str]]:
+    """The labelled rows of a flags_to_label.csv saved as data/flag_labels.csv; rows with no verdict
+    are skipped, unknown verdicts are listed as problems."""
+    labels, problems = [], []
+    with path.open(encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        missing = {"video", "seconds", "issue_type", "verdict"} - set(reader.fieldnames or [])
+        if missing:
+            raise SystemExit(f"error: {path.name} is missing the column(s): {', '.join(sorted(missing))}")
+        for n, row in enumerate(reader, start=2):
+            raw = (row.get("verdict") or "").strip().lower()
+            if not raw:
+                continue
+            verdict = VERDICTS.get(raw)
+            if verdict is None:
+                problems.append(f"{path.name} line {n}: verdict {raw!r} isn't real, wrong or minor; skipped")
+                continue
+            try:
+                seconds = float(row["seconds"])
+            except (TypeError, ValueError):
+                problems.append(f"{path.name} line {n}: seconds {row.get('seconds')!r} isn't a number; skipped")
+                continue
+            labels.append(Label((row.get("video") or "").strip(), seconds, (row.get("issue_type") or "").strip(),
+                                verdict, (row.get("comment") or "").strip()))
+    return labels, problems
+
+
+def apply_labels(flags: list[Flag], labels: list[Label], window: float) -> list[Label]:
+    """Give each label's verdict to the flag of the same video and issue type nearest its time
+    (within `window` seconds, one label per flag). Returns the labels that found no flag."""
+    unused = []
+    for label in labels:
+        candidates = [f for f in flags if f.verdict is None and f.video == label.video
+                      and f.issue.type == label.issue_type and abs(f.issue.timestamp - label.seconds) <= window]
+        if not candidates:
+            unused.append(label)
+            continue
+        min(candidates, key=lambda f: abs(f.issue.timestamp - label.seconds)).verdict = label.verdict
+    return unused
+
+
+def write_label_sheet(path: Path, flags: list[Flag]) -> None:
+    """Every flag, one row each, for you to label: fill verdict, save as data/flag_labels.csv."""
+    with path.open("w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(LABEL_COLUMNS)
+        for fl in sorted(flags, key=lambda x: (x.video, x.issue.timestamp, x.issue.type)):
+            note = "; ".join(f"[{n.kind}] {n.text}" for n in fl.matches)
+            w.writerow([fl.video, format_timestamp(fl.issue.timestamp), f"{fl.issue.timestamp:.2f}", fl.issue.type,
+                        fl.issue.message, note, fl.verdict or "", ""])
 
 
 def find_video(name: str, folders: list[Path]) -> Path | None:
@@ -219,8 +319,8 @@ def caption_flags(video: Path, client_code: str, config: dict) -> tuple[list[Fla
 
     started = time.monotonic()
     try:
-        result = run_qc(video, client_code or None, options=QCOptions(use_llm=False, check_color=False),
-                        config=config)
+        result = run_qc(video, client_code or None, config=config,
+                        options=QCOptions(use_llm=False, check_color=False, disabled_checks=frozenset({"delivery"})))
     except QCError as exc:
         print(f"  {video.name}: captions not checked: {exc}")
         return [], 0.0, 0.0
@@ -251,7 +351,8 @@ def audio_flags(path: Path, client_code: str, config: dict, overrides: dict | No
         print(f"  {path.name}: the audio checks are off for client {client_code or 'default'}")
     try:
         result = run_qc(path, client_code or None, config=config,
-                        options=QCOptions(use_llm=False, check_color=False, audio_overrides=overrides or {}))
+                        options=QCOptions(use_llm=False, check_color=False, audio_overrides=overrides or {},
+                                          disabled_checks=frozenset({"delivery"})))
     except QCError as exc:
         print(f"  {path.name}: audio not checked: {exc}")
         return [], 0.0, 0.0
@@ -263,19 +364,66 @@ def audio_flags(path: Path, client_code: str, config: dict, overrides: dict | No
 
 # --- matching and scoring -------------------------------------------------------------------
 
-def match(notes: list[Note], flags: list[Flag], tolerance: float, audio_tolerance: float | None = None) -> None:
+def match(notes: list[Note], flags: list[Flag], tolerance: float, audio_tolerance: float | None = None,
+          note_lag: float = 0.0) -> None:
+    """Strict matches (the note inside the flag's span +-tolerance) go to note.matched_by and
+    flag.matches; a note up to note_lag s later than that only to note.late_by (recall +lag)."""
     for flag in flags:
         tol = audio_tolerance if audio_tolerance is not None and flag.area == "audio" else tolerance
         lo, hi = flag.start - tol, flag.end + tol
+        flag.window = (lo, hi, hi + max(note_lag, 0.0))
         for note in notes:
             if note.start is None or note.kind == "none" or note.area != flag.area:
                 continue
             if note.end >= lo and note.start <= hi:              # overlap, ranges included
                 note.matched_by.append(flag.issue)
                 flag.matches.append(note)
+            elif note_lag > 0 and note.end >= lo and note.start <= hi + note_lag:
+                note.late_by.append(flag.issue)
 
 
-def score(notes: list[Note], flags: list[Flag], minutes: float) -> list[dict]:
+def is_real(flag: Flag, kind: str | None, area_name: str) -> bool:
+    """A judged flag's truth: its label, else whether it matches a note (of `kind` or a generic
+    one; any note of the area when kind is None)."""
+    if flag.verdict is not None:
+        return flag.verdict in (REAL, MINOR)
+    if kind is None:
+        return bool(flag.matches)
+    return any(n.kind in (kind, generic(area_name)) for n in flag.matches)
+
+
+def coverage(flags: list[Flag], length: float, lagged: bool) -> float:
+    """Share of a video's time (0..length s) inside at least one flag's match window: the chance
+    that a note at a random moment would be matched by these flags."""
+    if length <= 0:
+        return 0.0
+    spans = sorted((max(f.window[0], 0.0), min(f.window[2] if lagged else f.window[1], length))
+                   for f in flags if f.window is not None)
+    covered, reach = 0.0, 0.0
+    for lo, hi in spans:
+        lo = max(lo, reach)
+        if hi > lo:
+            covered, reach = covered + hi - lo, hi
+    return covered / length
+
+
+def chance_recall(relevant: list[Note], flags: list[Flag], lengths: dict[str, float], lagged: bool) -> float | None:
+    """The recall flags placed at random would get: per note, the share of its video covered by
+    the flag windows (the same number of flags, the same window sizes), averaged over the notes."""
+    if not relevant or any(n.video not in lengths for n in relevant):
+        return None
+    by_video: dict[str, list[Flag]] = defaultdict(list)
+    for f in flags:
+        by_video[f.video].append(f)
+    cover = {v: coverage(by_video[v], lengths[v], lagged) for v in {n.video for n in relevant}}
+    return sum(cover[n.video] for n in relevant) / len(relevant)
+
+
+def score(notes: list[Note], flags: list[Flag], minutes: float, reviewed: set[str] | None = None,
+          lengths: dict[str, float] | None = None) -> list[dict]:
+    """Per check type. reviewed: the fully reviewed videos (None = every video): only their flags,
+    and labelled flags, count toward precision; minutes is their length, for false alarms / min.
+    lengths: each video's length in seconds, for the chance columns (None: not computed)."""
     rows = []
     timed = [n for n in notes if n.start is not None and n.kind != "none"]
     for name, kinds, everything in (("caption", list(CAPTION_FAMILIES), ALL_CAPTIONS),
@@ -286,18 +434,25 @@ def score(notes: list[Note], flags: list[Flag], minutes: float) -> list[dict]:
             if kind == everything:
                 relevant = area_notes
                 found = [n for n in relevant if n.matched_by]
+                late = [n for n in relevant if n.matched_by or n.late_by]
                 mine = area_flags
-                true = [f for f in mine if f.matches]
             else:
                 relevant = [n for n in area_notes if n.kind == kind]
                 found = [n for n in relevant if any(family(i.type) == kind for i in n.matched_by)]
+                late = [n for n in relevant if any(family(i.type) == kind for i in n.matched_by + n.late_by)]
                 mine = [f for f in area_flags if f.kind == kind]
-                true = [f for f in mine if any(n.kind in (kind, generic(name)) for n in f.matches)]
+            judged = [f for f in mine if f.verdict is not None or reviewed is None or f.video in reviewed]
+            true = [f for f in judged if is_real(f, None if kind == everything else kind, name)]
+            false_in_reviewed = [f for f in judged if (reviewed is None or f.video in reviewed) and f not in true]
             rows.append({
-                "type": kind, "area": name, "notes": len(relevant), "found": len(found), "flags": len(mine),
-                "true": len(true), "recall": len(found) / len(relevant) if relevant else None,
-                "precision": len(true) / len(mine) if mine else None,
-                "fp_per_min": (len(mine) - len(true)) / minutes if minutes else None,
+                "type": kind, "area": name, "notes": len(relevant), "found": len(found), "found_lag": len(late),
+                "flags": len(mine), "judged": len(judged), "true": len(true),
+                "recall": len(found) / len(relevant) if relevant else None,
+                "recall_lag": len(late) / len(relevant) if relevant else None,
+                "chance": chance_recall(relevant, mine, lengths, False) if lengths is not None else None,
+                "chance_lag": chance_recall(relevant, mine, lengths, True) if lengths is not None else None,
+                "precision": len(true) / len(judged) if judged else None,
+                "fp_per_min": len(false_in_reviewed) / minutes if minutes else None,
             })
     return rows
 
@@ -309,10 +464,13 @@ def pct(x) -> str:
 # --- output ---------------------------------------------------------------------------------
 
 def write_outputs(folder: Path, rows: list[dict], notes: list[Note], flags: list[Flag], videos: dict,
-                  problems: list[str], tolerance: float, audio_tolerance: float = 1.5) -> Path:
+                  problems: list[str], tolerance: float, audio_tolerance: float = 1.5, note_lag: float = 0.0,
+                  reviewed: set[str] | None = None) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     misses = [n for n in notes if n.start is not None and n.kind != "none" and not n.matched_by]
-    false_alarms = [f for f in flags if not f.matches]
+    false_alarms = [f for f in flags if not f.matches and f.verdict not in (REAL, MINOR)]
+    counts = lambda f: f.verdict == WRONG or reviewed is None or f.video in reviewed      # noqa: E731
+    write_label_sheet(folder / "flags_to_label.csv", flags)
     untimed = [n for n in notes if n.start is None and n.kind != "none"]
 
     with (folder / "misses.csv").open("w", encoding="utf-8-sig", newline="") as f:
@@ -322,33 +480,59 @@ def write_outputs(folder: Path, rows: list[dict], notes: list[Note], flags: list
             w.writerow([n.video, n.stamp, f"{n.start:.2f}", n.client, n.kind, n.text])
     with (folder / "false_alarms.csv").open("w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["video", "timestamp", "seconds", "caption or shot", "issue_type", "severity", "message"])
+        w.writerow(["video", "timestamp", "seconds", "caption or shot", "issue_type", "severity", "message",
+                    "counted"])
         for fl in false_alarms:
             w.writerow([fl.video, format_timestamp(fl.issue.timestamp), f"{fl.issue.timestamp:.2f}",
-                        fl.issue.original, fl.issue.type, fl.issue.severity, fl.issue.message])
+                        fl.issue.original, fl.issue.type, fl.issue.severity, fl.issue.message,
+                        "yes" if counts(fl) else "no: partly reviewed video"])
 
     total_min = sum(v["minutes"] for v in videos.values())
+    full = [v for v in videos if reviewed is None or v in reviewed]
+    labelled = sum(1 for f in flags if f.verdict is not None)
+    if reviewed is None:
+        judged_text = "every video is treated as fully reviewed (--assume-reviewed)"
+    elif full:
+        judged_text = f"{len(full)} fully reviewed video(s) of {len(videos)}"
+    else:
+        judged_text = "no video is marked fully reviewed (\"full\" in the ground truth's review column)"
     lines = [f"# Check evaluation, {dt.datetime.now():%Y-%m-%d %H:%M}", "",
              f"{len(videos)} video(s), {total_min:.1f} minutes; {sum(1 for n in notes if n.start is not None)} timed "
              f"note(s), {len(untimed)} untimed; matching tolerance ±{tolerance:g} s around each flagged caption or shot, "
              f"±{audio_tolerance:g} s around each audio flag.",
              "", "Caption flags come from every caption check except the paid punctuation one (no API calls).", "",
-             "| Check | Notes | Found | Recall | Flags | True | Precision | False alarms / min |",
-             "|---|---:|---:|---:|---:|---:|---:|---:|"]
+             f"**Precision** counts judged flags only: {judged_text}, plus {labelled} labelled flag(s). A flag in a "
+             "partly reviewed video that matches no note may be a real problem nobody wrote down; label it in "
+             "flags_to_label.csv to count it.",
+             ("**Recall +lag** also counts a note written up to "
+              f"{note_lag:g} s after the flagged moment." if note_lag else "**Recall +lag** is off (--note-lag 0)."),
+             "**Chance** is the recall the same flags would get if they were placed at random (the share of each "
+             "video covered by their match windows). Only recall well above chance means a check finds problems.",
+             "",
+             "| Check | Notes | Found | Recall | Chance | Recall +lag | Chance +lag | Flags | Judged | True | Precision "
+             "| False alarms / min |",
+             "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for r in rows:
         if r["notes"] or r["flags"]:
             fp = "n/a" if r["fp_per_min"] is None else f"{r['fp_per_min']:.2f}"
-            lines.append(f"| {r['type']} | {r['notes']} | {r['found']} | {pct(r['recall'])} | {r['flags']} | "
-                         f"{r['true']} | {pct(r['precision'])} | {fp} |")
-    lines += ["", "## Videos", "", "| Video | Minutes | Flags | Notes | Analysis time |", "|---|---:|---:|---:|---|"]
+            lag, chance_lag = (pct(r["recall_lag"]), pct(r["chance_lag"])) if note_lag else ("-", "-")
+            lines.append(f"| {r['type']} | {r['notes']} | {r['found']} | {pct(r['recall'])} | {pct(r['chance'])} | "
+                         f"{lag} | {chance_lag} | {r['flags']} | {r['judged']} | {r['true']} | "
+                         f"{pct(r['precision'])} | {fp} |")
+    lines += ["", "## Videos", "", "| Video | Minutes | Flags | Notes | Reviewed | Analysis time |",
+              "|---|---:|---:|---:|---|---|"]
     for name, v in videos.items():
         took = "from cache" if v["took"] == 0 else f"{v['took']:.0f} s ({v['took'] / max(v['minutes'], 1e-9):.0f} s per minute)"
-        lines.append(f"| {name} | {v['minutes']:.1f} | {v['flags']} | {v['notes']} | {took} |")
+        lines.append(f"| {name} | {v['minutes']:.1f} | {v['flags']} | {v['notes']} | "
+                     f"{'full' if name in full else 'partly'} | {took} |")
     lines += ["", f"## Misses ({len(misses)})", "", "Notes no flag of the right type matched.", ""]
     lines += [f"- **{n.video}** {n.stamp} [{n.kind}] {n.text}" for n in misses] or ["- none"]
-    lines += ["", f"## False alarms ({len(false_alarms)})", "", "Flags that match no note.", ""]
+    lines += ["", f"## False alarms ({len(false_alarms)})", "",
+              "Flags that match no note and aren't labelled real. Those marked (not counted) are in a partly "
+              "reviewed video, so they don't lower precision.", ""]
     lines += [f"- **{f.video}** {format_timestamp(f.issue.timestamp)} {f.issue.original} [{f.issue.type}, "
-              f"{f.issue.severity}] {f.issue.message}" for f in false_alarms] or ["- none"]
+              f"{f.issue.severity}] {f.issue.message}" + ("" if counts(f) else " (not counted)")
+              for f in false_alarms] or ["- none"]
     other_type = [f for f in flags if f.matches
                   and not any(n.kind in (f.kind, generic(f.area)) for n in f.matches)]
     lines += ["", f"## Right moment, different type ({len(other_type)})", "",
@@ -465,10 +649,10 @@ def make_template(xlsx: Path, out: Path) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
-        w.writerow(COLUMNS)
+        w.writerow(COLUMNS + ["review"])
         for task, stamp, client, kind, text in rows:
             # The video column starts as the task name: replace it with the video's file name.
-            w.writerow([f"TODO {task}".strip(), stamp, client, kind, text])
+            w.writerow([f"TODO {task}".strip(), stamp, client, kind, text, ""])
 
     # Which videos to collect, the ones with the most checkable notes first.
     tasks: dict[str, dict] = {}
@@ -488,17 +672,18 @@ def make_template(xlsx: Path, out: Path) -> int:
           f"check them), {len(rows) - captions - audio} color notes and {audio} audio-edit notes "
           f"(clients {', '.join(AUDIO_CLIENTS)}), from {len(tasks)} videos.")
     print(f"wrote {needed}: the videos to collect, most useful first.")
-    print("Replace each 'TODO <task name>' with the video's file name, check the guessed issue_type, and "
-          "delete rows for videos you don't have.")
+    print("Replace each 'TODO <task name>' with the video's file name, check the guessed issue_type, delete rows "
+          "for videos you don't have, and put \"full\" in the review column of videos whose every problem was noted.")
     return 0
 
 
 def compare_suppression(report: Path, rows: list[dict], notes: list[Note], by_video: dict, folders: list[Path],
-                        config: dict, tolerance: float, minutes: float) -> None:
+                        config: dict, tolerance: float, minutes: float, reviewed: set[str] | None = None,
+                        labels: list[Label] | None = None, label_window: float = 0.5) -> None:
     """The audio rows again with suppression off; a before/after table in evaluation.md and on screen."""
     from dataclasses import replace
 
-    fresh = [replace(n, matched_by=[]) for n in notes]
+    fresh = [replace(n, matched_by=[], late_by=[]) for n in notes]
     flags: list[Flag] = []
     for name, video_notes in by_video.items():
         path = find_video(name, folders)
@@ -510,7 +695,8 @@ def compare_suppression(report: Path, rows: list[dict], notes: list[Note], by_vi
         found, _, _ = audio_flags(path, client, config, {"suppression": False})
         match([n for n in fresh if n.video == name], found, 2.0, tolerance)
         flags += found
-    off = {r["type"]: r for r in score(fresh, flags, minutes) if r["area"] == "audio"}
+    apply_labels(flags, labels or [], label_window)
+    off = {r["type"]: r for r in score(fresh, flags, minutes, reviewed) if r["area"] == "audio"}
     on = {r["type"]: r for r in rows if r["area"] == "audio"}
     lines = ["", "## Audio: with and without the suppression", "",
              "Suppression: overlap zones, music, effects and the client's cues are left alone; room tone and "
@@ -545,6 +731,15 @@ def main(argv=None) -> int:
     parser.add_argument("--checks", choices=("all", "captions", "color", "audio"), default="all",
                         help="which checks to evaluate (captions and audio run speech recognition: slower)")
     parser.add_argument("--audio-tolerance", type=float, default=1.5, help="seconds either side of an audio flag")
+    parser.add_argument("--note-lag", type=float, default=5.0,
+                        help="for the recall +lag column: a note may be up to this many seconds after the flag "
+                             "(0 = off)")
+    parser.add_argument("--labels", type=Path, default=ROOT / "data" / "flag_labels.csv",
+                        help="your verdicts on single flags (a filled-in flags_to_label.csv)")
+    parser.add_argument("--label-window", type=float, default=0.5,
+                        help="seconds between a label's time and the flag it belongs to")
+    parser.add_argument("--assume-reviewed", action="store_true",
+                        help="treat every video as fully reviewed: every unmatched flag counts as a false alarm")
     parser.add_argument("--compare-suppression", action="store_true",
                         help="also run the audio checks with the overlap / music / effect suppression off, and "
                              "compare recall and precision")
@@ -561,6 +756,11 @@ def main(argv=None) -> int:
 
     config = load_config()
     notes, problems = read_truth(args.truth, float(config.get("timecode", {}).get("fps", 30)))
+    reviewed = None if args.assume_reviewed else reviewed_videos(notes)
+    labels: list[Label] = []
+    if args.labels.is_file():
+        labels, label_problems = read_labels(args.labels)
+        problems += label_problems
     wanted = {"all": {"caption", "color", "audio"}, "captions": {"caption"}, "color": {"color"},
               "audio": {"audio"}}[args.checks]
     for n in notes:
@@ -591,29 +791,43 @@ def main(argv=None) -> int:
                 found, seconds, spent = check(path, client, config)
                 flags += found
                 length, took = max(length, seconds), took + spent
-        match(video_notes, flags, args.tolerance, args.audio_tolerance)
+        match(video_notes, flags, args.tolerance, args.audio_tolerance, args.note_lag)
         all_flags += flags
         videos[name] = {"minutes": length / 60, "flags": len(flags), "notes": len(video_notes), "took": took}
 
+    unused = apply_labels(all_flags, labels, args.label_window)
+    if unused:
+        problems.append(f"{len(unused)} label(s) in {args.labels.name} match no flag of this run (the checks "
+                        "changed, or that video wasn't evaluated)")
     evaluated = [n for n in notes if n.kind != "none" or n.video in videos]
-    minutes = sum(v["minutes"] for v in videos.values())
-    rows = score(evaluated, all_flags, minutes)
+    minutes = sum(v["minutes"] for name, v in videos.items() if reviewed is None or name in reviewed)
+    lengths = {name: v["minutes"] * 60 for name, v in videos.items()}
+    rows = score(evaluated, all_flags, minutes, reviewed, lengths)
     folder = Path(config["_root"]) / config.get("report", {}).get("output_dir", "reports") / \
         f"evaluation_{dt.datetime.now():%Y%m%d-%H%M%S}"
-    report = write_outputs(folder, rows, evaluated, all_flags, videos, problems, args.tolerance, args.audio_tolerance)
+    report = write_outputs(folder, rows, evaluated, all_flags, videos, problems, args.tolerance, args.audio_tolerance,
+                           args.note_lag, reviewed)
     if args.compare_suppression and "audio" in wanted:
-        compare_suppression(report, rows, evaluated, by_video, folders, config, args.audio_tolerance, minutes)
+        compare_suppression(report, rows, evaluated, by_video, folders, config, args.audio_tolerance, minutes,
+                            reviewed, labels, args.label_window)
 
     print()
-    print(f"{'check':<16}{'notes':>6}{'found':>6}{'recall':>8}{'flags':>7}{'true':>6}{'precision':>11}{'FP/min':>8}")
+    print(f"{'check':<16}{'notes':>6}{'found':>6}{'recall':>8}{'chance':>8}{'+lag':>6}{'chance':>8}{'flags':>7}"
+          f"{'judged':>7}{'true':>6}{'precision':>11}{'FP/min':>8}")
     for r in rows:
         if r["notes"] or r["flags"]:
             fp = "n/a" if r["fp_per_min"] is None else f"{r['fp_per_min']:.2f}"
-            print(f"{r['type']:<16}{r['notes']:>6}{r['found']:>6}{pct(r['recall']):>8}{r['flags']:>7}{r['true']:>6}"
-                  f"{pct(r['precision']):>11}{fp:>8}")
+            lag, chance_lag = (pct(r["recall_lag"]), pct(r["chance_lag"])) if args.note_lag else ("-", "-")
+            print(f"{r['type']:<16}{r['notes']:>6}{r['found']:>6}{pct(r['recall']):>8}{pct(r['chance']):>8}{lag:>6}"
+                  f"{chance_lag:>8}{r['flags']:>7}{r['judged']:>7}{r['true']:>6}{pct(r['precision']):>11}{fp:>8}")
     for p in problems:
         print(f"note: {p}")
+    if reviewed is not None and not any(v in reviewed for v in videos):
+        print("\nnote: no evaluated video is marked fully reviewed, so precision uses labelled flags only. Put "
+              "\"full\" in the review column of the ground truth for videos whose every problem was noted.")
     print(f"\nfull results, misses and false alarms: {report.parent}")
+    print(f"to label flags: fill the verdict column of {report.parent / 'flags_to_label.csv'} and save it as "
+          f"{args.labels}")
     return 0
 
 

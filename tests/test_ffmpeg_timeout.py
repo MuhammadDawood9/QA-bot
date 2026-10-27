@@ -74,3 +74,23 @@ def test_hung_audio_reading_is_an_error_that_says_why(monkeypatch, tmp_path):
         system.extract_audio(Path("v.mp4"), tmp_path / "a.wav", "ffmpeg")
     with pytest.raises(RuntimeError, match="ffmpeg_timeout_sec"):
         media.load_audio(Path("v.mp4"), "ffmpeg")
+
+
+def test_streamed_output_comes_in_pieces_and_a_failure_is_an_error():
+    import sys
+
+    chunks = list(system.stream_ffmpeg([sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'x' * 10)"], 4))
+    assert b"".join(chunks) == b"x" * 10 and len(chunks) >= 3
+    with pytest.raises(RuntimeError, match="failed: boom"):
+        list(system.stream_ffmpeg([sys.executable, "-c", "import sys; sys.stderr.write('boom'); sys.exit(1)"], 4))
+
+
+def test_a_hung_stream_is_stopped_at_the_timeout():
+    import sys
+    import time
+
+    system.set_ffmpeg_timeout(0.5)
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="ffmpeg_timeout_sec"):
+        list(system.stream_ffmpeg([sys.executable, "-c", "import time; time.sleep(30)"], 4))
+    assert time.monotonic() - started < 10

@@ -27,7 +27,8 @@ log = logging.getLogger("qcbot.video")
 def read_video_once(video: Path, *, ocr: dict, ocr_cache: Path, read_captions: bool, read_screen: bool,
                     known_captions: Sequence[Caption] | None = None, color: dict | None = None,
                     caption_region: dict | None = None, color_cache: Path | None = None,
-                    models_dir: Path | None = None, engine=None, progress: Stage | None = None) -> list[str]:
+                    models_dir: Path | None = None, engine=None, progress: Stage | None = None,
+                    picture: dict | None = None, picture_cache: Path | None = None) -> list[str]:
     """Run the passes whose results aren't cached, in one decode, and cache their results.
 
     ocr             the OCR settings (captions and on-screen text)
@@ -36,6 +37,7 @@ def read_video_once(video: Path, *, ocr: dict, ocr_cache: Path, read_captions: b
     known_captions  the captions when they come from a caption file (the on-screen text pass
                     leaves them out)
     color           the color settings, or None when color isn't checked
+    picture         the delivery checks' picture settings (every frame measured), or None
     Returns the names of the passes it ran: [] when everything was in the caches.
     """
     from src.video.color import ColorAnalyzer, color_cache_file, face_detector, load_shots, save_shots
@@ -60,11 +62,18 @@ def read_video_once(video: Path, *, ocr: dict, ocr_cache: Path, read_captions: b
     if color is not None and color_cache is not None:
         if load_shots(color_cache_file(video, color, caption_region, color_cache)) is None:
             wanted["color"] = float(color.get("sample_fps", 4))
-    if not wanted:
+    scanner = None
+    if picture is not None and picture_cache is not None:
+        from src.delivery.picture import FrameScanner, frame_cache_file, load_frame_stats
+
+        if load_frame_stats(frame_cache_file(video, picture, picture_cache)) is None:
+            scanner = FrameScanner(picture)
+    if not wanted and scanner is None:
         return []
 
     names = {"captions": "captions", "screen": "on-screen text", "color": "color"}
-    log.info("reading %s once for: %s...", video.name, ", ".join(names[n] for n in wanted))
+    log.info("reading %s once for: %s...", video.name,
+             ", ".join([names[n] for n in wanted] + (["delivery frames"] if scanner else [])))
     started = time.monotonic()
     if ("captions" in wanted or "screen" in wanted) and engine is None:
         engine = rapidocr_engine(ocr)
@@ -78,8 +87,13 @@ def read_video_once(video: Path, *, ocr: dict, ocr_cache: Path, read_captions: b
                                          face_detector(models_dir, float(color.get("face_min_score", 0.8)))
                                          if color.get("skin_tones", True) else None)
 
+    def every_frame(t, duration, frame):
+        scanner.feed(t, frame)
+        if not wanted and duration and scanner.stats.frame_count % 30 == 0:
+            progress(t / duration)                      # no sampled frames to report progress with
+
     shared_reads = 0
-    for t, duration, image, due in shared_frames(video, wanted):
+    for t, duration, image, due in shared_frames(video, wanted, every_frame if scanner else None):
         progress(t / duration if duration else 0.0)
         for name in due:                                # captions come before screen: see `wanted`
             if name == "screen" and "captions" in due and readers["captions"].whole_frame_boxes is not None:
@@ -98,5 +112,9 @@ def read_video_once(video: Path, *, ocr: dict, ocr_cache: Path, read_captions: b
                          readers["screen"].texts(captions or []))
     if "color" in readers:
         save_shots(color_cache_file(video, color, caption_region, color_cache), video, readers["color"].shots())
+    if scanner is not None:
+        from src.delivery.picture import save_frame_stats
+
+        save_frame_stats(frame_cache_file(video, picture, picture_cache), video, scanner.result())
     log.info("read %s in %.0f s", video.name, time.monotonic() - started)
-    return list(wanted)
+    return list(wanted) + (["picture"] if scanner is not None else [])

@@ -12,3 +12,10 @@ client: E3ME
 project: pack of 8 reels / podcast
 notes: Highlighted text sits above white text; center-aligned text.
 overrides: {}
+
+# What this client orders (delivery checks, src/delivery/; every key is in config.yaml "delivery:").
+delivery:
+  spec:
+    aspect: "9:16"               # vertical reels; any length
+  loudness:
+    target_lufs: -14.0           # social media / YouTube

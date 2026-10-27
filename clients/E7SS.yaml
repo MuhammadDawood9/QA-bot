@@ -13,3 +13,10 @@ project: Stinger Sports reels
 notes: Text on black background box, no opacity keyframing or black intro, keep text inside frame; athlete
   names must be exact.
 overrides: {}
+
+# What this client orders (delivery checks, src/delivery/; every key is in config.yaml "delivery:").
+delivery:
+  spec:
+    aspect: "9:16"               # vertical reels; any length
+  loudness:
+    target_lufs: -14.0           # social media / YouTube

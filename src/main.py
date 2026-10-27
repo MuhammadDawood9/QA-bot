@@ -63,6 +63,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, default=None, help="config file (default: config.yaml)")
     parser.add_argument("--json", action="store_true", help="print issues as JSON instead of text")
     parser.add_argument("--no-color", action="store_true", help="skip the color grading checks")
+    parser.add_argument("--no-delivery", action="store_true",
+                        help="skip the delivery checks (format, loudness, clipping, black / frozen / flash frames)")
     parser.add_argument("--no-llm", action="store_true",
                         help="skip the punctuation check (no Anthropic API calls, no cost)")
     parser.add_argument("--video", type=Path, default=None,
@@ -131,6 +133,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if floor.shared and not floor.sync():
             print(f"warning: {floor.status_text()}", file=sys.stderr)
     options = QCOptions(srt_path=args.srt, use_llm=not args.no_llm, check_color=not args.no_color,
+                        disabled_checks=frozenset({"delivery"}) if args.no_delivery else frozenset(),
                         config_path=args.config)
     try:
         result = run_qc(args.video, args.client, TerminalProgress(), options=options)

@@ -75,6 +75,47 @@ def find_ffmpeg(configured: str | None = None) -> str:
     return found
 
 
+def stream_ffmpeg(cmd: list[str], chunk_bytes: int):
+    """ffmpeg's output (stdout) in pieces of chunk_bytes, for files too long to hold in memory.
+    Stopped after machine.ffmpeg_timeout_sec like run_ffmpeg. Raises RuntimeError if ffmpeg fails
+    or is stopped."""
+    import tempfile
+    import threading
+
+    with tempfile.TemporaryFile() as err:                  # stderr to a file: a full pipe can't block ffmpeg
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err)
+        timed_out = threading.Event()
+
+        def stop():
+            timed_out.set()
+            proc.kill()                                    # the blocked read below then ends
+
+        timer = threading.Timer(_ffmpeg_timeout, stop) if _ffmpeg_timeout else None
+        if timer is not None:
+            timer.daemon = True
+            timer.start()
+        try:
+            while True:
+                chunk = proc.stdout.read(chunk_bytes)
+                if not chunk:
+                    break
+                yield chunk
+            code = proc.wait()
+            if timed_out.is_set():
+                raise RuntimeError(f"ffmpeg was stopped after {_ffmpeg_timeout:g} s (machine.ffmpeg_timeout_sec)")
+            if code != 0:
+                err.seek(0)
+                message = err.read().decode("utf-8", errors="replace").strip()[-400:]
+                raise RuntimeError(f"ffmpeg failed: {message}")
+        finally:
+            if timer is not None:
+                timer.cancel()
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            proc.stdout.close()
+
+
 def ffmpeg_version(configured: str | None = None) -> str:
     """First line of `ffmpeg -version`."""
     cmd = [find_ffmpeg(configured), "-version"]

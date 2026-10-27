@@ -12,7 +12,7 @@ VIDEO_EXTENSIONS = (".mp4", ".mov", ".m4v", ".mkv", ".avi", ".mxf", ".webm")
 AUDIO_EXTENSIONS = (".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg")     # podcasts: the audio checks only
 MEDIA_EXTENSIONS = VIDEO_EXTENSIONS + AUDIO_EXTENSIONS
 
-# (key, menu label). Keys are the engine's check names, plus "color".
+# (key, menu label). Keys are the engine's check names, plus "color", "audio" and "delivery".
 CHECK_TOGGLES: list[tuple[str, str]] = [
     ("too_short", "Too short / phrase breaks"),
     ("spelling", "Spelling and repeated words"),
@@ -23,6 +23,7 @@ CHECK_TOGGLES: list[tuple[str, str]] = [
     ("screen_text", "Names vs on-screen graphics"),
     ("color", "Color grading"),
     ("audio", "Audio edits (stutters, cuts, dead air)"),
+    ("delivery", "Delivery (format, loudness, black frames)"),
 ]
 OFF_BY_DEFAULT = {"punctuation"}          # the Anthropic API is paid per video; switched on by choice
 # Shown in the Checks menu only when an admin turned them on in config.yaml (checks.<name>.enabled).
@@ -75,4 +76,4 @@ def qc_options(disabled: Iterable[str]) -> QCOptions:
     """Engine options from the checks switched off in the menu."""
     off = frozenset(disabled)
     return QCOptions(use_llm="punctuation" not in off, check_color="color" not in off,
-                     disabled_checks=off - {"color"})          # "audio" stays: the engine reads it
+                     disabled_checks=off - {"color"})          # "audio", "delivery" stay: the engine reads them

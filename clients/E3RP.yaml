@@ -12,3 +12,10 @@ client: E3RP
 project: animated videos
 notes: Text speed and word spacing checked repeatedly.
 overrides: {}
+
+# What this client orders (delivery checks, src/delivery/; every key is in config.yaml "delivery:").
+delivery:
+  spec:
+    aspect: "16:9"               # horizontal videos; any length
+  loudness:
+    target_lufs: -14.0           # YouTube / web

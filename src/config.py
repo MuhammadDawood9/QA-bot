@@ -91,7 +91,7 @@ LOCAL_NAME = "local.yaml"      # this PC's own settings (machine: block), laid o
 # Paths that are per user and per PC (caches, downloaded models): under the local folder even when
 # the rules come from the shared folder.
 LOCAL_PATH_KEYS = ("llm_cache_file", "transcript_cache_dir", "ocr_cache_dir", "color_cache_dir", "audio_cache_dir",
-                   "models_dir")
+                   "frames_cache_dir", "models_dir")
 # Shared files that, when missing from the data folder, are read from the app's own defaults.
 DATA_FILE_KEYS = ("rules_file", "glossary_file", "extra_words_file", "examples_file", "color_file")
 

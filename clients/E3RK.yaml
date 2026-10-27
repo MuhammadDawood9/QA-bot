@@ -14,3 +14,10 @@ notes: 'Flowing sentences: fewer full stops, no capital after them; text placed 
 overrides: {}
 ocr:
   region: full                     # text sits just below the speaker's chin and moves with them
+
+# What this client orders (delivery checks, src/delivery/; every key is in config.yaml "delivery:").
+delivery:
+  spec:
+    aspect: "9:16"               # vertical reels; any length
+  loudness:
+    target_lufs: -14.0           # social media / YouTube

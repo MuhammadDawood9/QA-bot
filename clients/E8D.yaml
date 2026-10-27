@@ -15,3 +15,10 @@ notes: Stylized lowercase allowed ("Y'all" in small letters, "realm"), no text a
 overrides:
   capitalization:
     allow_stylized_lowercase: true
+
+# What this client orders (delivery checks, src/delivery/; every key is in config.yaml "delivery:").
+delivery:
+  spec:
+    aspect: "16:9"               # horizontal videos; any length
+  loudness:
+    target_lufs: -14.0           # YouTube / web
