@@ -18,6 +18,7 @@ CHECK_TOGGLES: list[tuple[str, str]] = [
     ("spelling", "Spelling and repeated words"),
     ("capitalization", "Capitalization"),
     ("spacing", "Spacing"),
+    ("punctuation_style", "Question marks and full-stop style"),
     ("punctuation", "Punctuation (AI, costs money)"),
     ("transcript", "Captions vs audio"),
     ("screen_text", "Names vs on-screen graphics"),

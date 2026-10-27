@@ -15,6 +15,8 @@ notes: Stylized lowercase allowed ("Y'all" in small letters, "realm"), no text a
 overrides:
   capitalization:
     allow_stylized_lowercase: true
+  punctuation_style:
+    full_stops: sentences          # "full stop after 'come from'": a sentence before a pause needs one
 
 # What this client orders (delivery checks, src/delivery/; every key is in config.yaml "delivery:").
 delivery:

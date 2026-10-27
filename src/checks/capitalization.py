@@ -6,6 +6,9 @@ Flags (issue type "capitalization"):
   - proper nouns from config written in lowercase (months and days: "august" -> "August")
   - broken mixed case ("realM", "THe"); brand-style names like YouTube, iPhone, McGwire are fine
   - a common word capitalized in the middle of a sentence ("and There it was")
+  - with sentence_start_capital (off by default; E8C titles): a sentence starting in lowercase
+    ("aging well" -> "Aging well"). A caption starts a sentence after one that ended with . ! ?
+    or after a pause of mid_sentence_capitals.sentence_gap_sec.
 
 Clients with allow_stylized_lowercase (E8D) may write anything in all lowercase on purpose,
 so lowercase "i", months and names are not flagged for them. Broken mixed case still is.
@@ -74,6 +77,7 @@ def check(captions: Sequence[Caption], settings: dict, context: CheckContext | N
     ambiguous = {w.lower() for w in settings.get("ambiguous_lowercase", [])}
     mid = settings.get("mid_sentence_capitals", {})
     check_mixed = settings.get("check_mixed_case", True)
+    sentence_caps = settings.get("sentence_start_capital", False)
 
     forced = dict(glossary.forced_words)
     for low, exact in glossary.forced_tokens.items():
@@ -124,6 +128,13 @@ def check(captions: Sequence[Caption], settings: dict, context: CheckContext | N
                 continue
 
             if glossary.is_known(base):
+                continue
+
+            if (sentence_caps and not stylized and base[:1].isalpha() and base[:1].islower()
+                    and starts_sentence(text, toks, i, new_sentence)):
+                fixed = base[0].upper() + word[1:]
+                issues.append(_issue(cap, "medium", f'A sentence starts here: "{fixed}" with a capital.',
+                                     replace_span(text, tok.start, tok.end, fixed), 0.8))
                 continue
 
             start = starts_sentence(text, toks, i, first_word_is_start)

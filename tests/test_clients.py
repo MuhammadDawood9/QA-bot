@@ -121,7 +121,9 @@ def test_edit_backs_up_and_logs_what_changed(data):
     assert len(backups) == 1 and "Danja promo/credit videos" in backups[0].read_text(encoding="utf-8")
     saved = store.load("E8D")
     assert saved["glossary"] == ["=Danja"] and saved["project"] == "Danja promo/credit videos"   # unmanaged key kept
-    assert saved["overrides"] == {"capitalization": {"allow_stylized_lowercase": True}}
+    assert saved["overrides"] == {"capitalization": {"allow_stylized_lowercase": True},
+                                  "punctuation_style": {"full_stops": "sentences"}}
+    assert saved["delivery"]["spec"]["aspect"] == "16:9"                    # a block the editor doesn't manage
     assert read_changelog(store.changelog)[-1]["user"] == "editor1"
     # saving the same thing again changes nothing and logs nothing
     assert store.save(build_client(findings_from_client(saved), base=saved), "edit") == ""

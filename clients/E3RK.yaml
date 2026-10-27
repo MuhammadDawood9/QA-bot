@@ -11,7 +11,9 @@
 client: E3RK
 project: My Criminal Life Lead Me to Christ reels
 notes: 'Flowing sentences: fewer full stops, no capital after them; text placed just below the chin.'
-overrides: {}
+overrides:
+  punctuation_style:
+    full_stops: never              # flowing sentences: "no full stop after 'there it was'"
 ocr:
   region: full                     # text sits just below the speaker's chin and moves with them
 
