@@ -595,6 +595,7 @@ def check_status_lines(context: CheckContext, video: Path | None, options: QCOpt
     """For the report header: which checks ran, and why any were skipped."""
     names = {"too_short": "Too short / phrase break", "spelling": "Spelling and repeated words",
              "capitalization": "Capitalization", "spacing": "Spacing",
+             "punctuation_style": "Question marks and full-stop style (free rules)",
              "punctuation": "Punctuation (Anthropic API)", "transcript": "Captions vs audio (Whisper)",
              "screen_text": "Names vs on-screen graphics"}
     lines = []

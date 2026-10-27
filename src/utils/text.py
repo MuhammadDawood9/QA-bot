@@ -49,6 +49,8 @@ def starts_sentence(text: str, toks: list[Token], i: int, caption_starts_sentenc
     before = text[toks[i - 1].end: toks[i].start] if i > 0 else text[: toks[i].start]
     if i == 0 and caption_starts_sentence:
         return True
+    # The dots in "www.example.com" don't end a sentence; a full stop right after the link does.
+    before = _NOT_PROSE.sub(lambda m: re.search(r"[.!?…]*$", m.group()).group(), before)
     return bool(_SENTENCE_BREAK.search(before) or _OPEN_QUOTE.search(before))
 
 

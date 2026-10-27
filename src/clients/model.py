@@ -53,7 +53,7 @@ SINGLE_KINDS = ("code", "name", "language", "min_words", "caption_area")
 LANGUAGES = {"en": "English", "es": "Spanish", "fr": "French", "de": "German", "pt": "Portuguese", "it": "Italian"}
 COLOR_TYPES = ("overexposed", "underexposed", "crushed_blacks", "flat_contrast", "saturation", "color_cast",
                "skin_tone", "shot_mismatch")
-CHECK_NAMES = ("too_short", "spelling", "capitalization", "spacing", "punctuation", "transcript", "screen_text",
+CHECK_NAMES = ("too_short", "spelling", "capitalization", "spacing", "punctuation_style", "punctuation", "transcript", "screen_text",
                "audio", "audio_guidelines")
 MUSIC_PLACES = ("intro", "outro", "transitions", "ad_breaks", "under_speech")
 SFX_PLACES = ("transitions", "stingers", "emphasis")

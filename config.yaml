@@ -119,6 +119,7 @@ checks:
     enabled: true
     allow_stylized_lowercase: false   # true for clients who write in all lowercase on purpose (E8D)
     check_mixed_case: true            # "realM", "THe"
+    sentence_start_capital: false     # true: a sentence starting in lowercase is flagged ("aging well" -> "Aging"; E8C)
     # Always capitalized. "may" and "march" are also common words, so a lowercase one is not flagged.
     proper_nouns: [
       "January", "February", "March", "April", "May", "June", "July", "August",
@@ -145,6 +146,30 @@ checks:
       # Words under 3 letters that may be one half of a glued pair ("andaccountability" has "and").
       short_words: ["a", "i", "an", "to", "of", "in", "on", "at", "is", "it", "be", "we", "my", "so",
                     "do", "go", "no", "up", "us", "or", "by", "me", "he", "if", "as", "am"]
+
+  # Punctuation by rule: free and offline (the "punctuation" check below is the paid AI one, which
+  # also judges commas inside a sentence and apostrophes). A client sets its house style under
+  # overrides: punctuation_style: in its client file.
+  punctuation_style:
+    enabled: true
+    question_marks:                   # a question ending in "." or "!" ("why would you do that.")
+      enabled: true
+      # A question: a question word followed by an auxiliary ("why would", "what is"), or an
+      # auxiliary followed by a pronoun ("are you", "can we"). "What I mean is" doesn't count.
+      question_words: ["what", "why", "how", "who", "where", "when", "which", "whose"]
+      auxiliaries: ["is", "are", "was", "were", "am", "do", "does", "did", "can", "could", "would", "will",
+                    "should", "shall", "have", "has", "had", "may", "might", "must",
+                    "isn't", "aren't", "wasn't", "weren't", "don't", "doesn't", "didn't", "can't", "couldn't",
+                    "wouldn't", "won't", "shouldn't", "haven't", "hasn't"]
+      pronouns: ["i", "you", "we", "they", "he", "she", "it", "this", "that", "there", "these", "those",
+                 "anyone", "anybody", "someone", "everyone"]
+    full_stops: any                   # any | never (flowing style: every full stop flagged; E3RK)
+                                      # | sentences (a caption that ends a sentence needs end punctuation)
+    abbreviations: ["mr", "mrs", "ms", "dr", "st", "vs", "etc", "jr", "sr"]   # their "." isn't a full stop
+                                      # (decimals, initials like U.S. and "..." never count either)
+    sentence_gap_sec: 2.0             # with "sentences": a pause this long after a caption ends its sentence
+    trailing_commas: true             # false: a comma at the end of a caption is flagged (E2AB)
+    max_commas_per_caption: 0         # 0 = off; more commas than this in one caption is flagged
 
   # Punctuation reviewed by Claude through the Anthropic API. OFF by default: the normal flow needs
   # no API key and no network, so the bot runs fully offline once set up. While it is off it is

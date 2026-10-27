@@ -12,7 +12,9 @@ client: E8C
 project: Sirina Talbot / SirinTalbot reels
 notes: Yellow + white subtitle theme (white general, yellow key words), no glow subtitles; capitalize
   title words and names.
-overrides: {}
+overrides:
+  capitalization:
+    sentence_start_capital: true   # "capitalize title words": "make the word 'aging' capital"
 
 # What this client orders (delivery checks, src/delivery/; every key is in config.yaml "delivery:").
 delivery:

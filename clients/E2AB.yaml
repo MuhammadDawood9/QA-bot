@@ -11,7 +11,9 @@
 client: E2AB
 project: KDL interview reels
 notes: Light punctuation (no comma after everything); remove fillers, stutters and doubled words.
-overrides: {}
+overrides:
+  punctuation_style:
+    trailing_commas: false         # light punctuation: "don't add a comma after everything"
 
 # What this client orders (delivery checks, src/delivery/; every key is in config.yaml "delivery:").
 delivery:
