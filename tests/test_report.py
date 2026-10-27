@@ -1,6 +1,7 @@
 import csv
 import datetime as dt
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -70,6 +71,14 @@ def test_header_and_summary(tmp_path):
     assert "| Spelling |  |  | 1 | 1 |" in text
     assert "| Extra word (audio) | 1 |  |  | 1 |" in text
     assert "| **All** | **1** | **1** | **1** | **3** |" in text
+
+
+def test_a_speech_skip_note_is_a_bold_line_under_the_header(tmp_path):
+    info_ = info(notes=["Speech comparison skipped: only 1 word in 27 s (coverage 4%)"])
+    written = build_report(CAPTIONS, ISSUES, info_, settings(tmp_path), None)
+    text = written[0].read_text(encoding="utf-8")
+    assert "**Speech comparison skipped: only 1 word in 27 s (coverage 4%)**" in text
+    assert text.index("Speech comparison skipped") < text.index("## Summary")     # near the top
 
 
 def test_issues_on_one_caption_share_one_section(tmp_path):
@@ -154,7 +163,7 @@ def test_grab_frame_uses_an_argument_list(monkeypatch, tmp_path):
         from PIL import Image
         Image.new("RGB", (8, 8)).save(tmp_path / "f.jpg", "JPEG")
         return type("R", (), {"returncode": 0, "stderr": ""})()
-    monkeypatch.setattr(screenshots.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
     assert screenshots.grab_frame("ffmpeg", Path("my clip.mp4"), 3.1, tmp_path / "f.jpg", 480)
     cmd = seen["cmd"]
     assert cmd[cmd.index("-ss") + 1] == "3.100" and cmd.index("-ss") < cmd.index("-i")
@@ -162,7 +171,7 @@ def test_grab_frame_uses_an_argument_list(monkeypatch, tmp_path):
 
 
 def test_grab_frame_failure_is_not_fatal(monkeypatch, tmp_path):
-    monkeypatch.setattr(screenshots.subprocess, "run",
+    monkeypatch.setattr(subprocess, "run",
                         lambda cmd, **kw: type("R", (), {"returncode": 1, "stderr": "seek past end"})())
     assert screenshots.grab_frame("ffmpeg", Path("v.mp4"), 999, tmp_path / "f.jpg") is False
 

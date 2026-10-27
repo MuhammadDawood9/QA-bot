@@ -23,7 +23,8 @@ from pathlib import Path
 from typing import Sequence
 
 from src import ignore
-from src.audio.media import is_audio_only
+from src.audio.media import has_audio, is_audio_only, media_duration
+from src.audio.speech import summarize
 from src.audio.transcribe import get_transcript
 from src.checks import CHECKS
 from src.checks.context import CheckContext
@@ -94,11 +95,13 @@ class QCResult(list):
     """The issues (a list, sorted by time), plus what a report or a summary needs."""
 
     def __init__(self, issues: Sequence[Issue], *, video: Path | None, srt: Path | None, captions: list[Caption],
-                 config: dict, client: dict, context: CheckContext, checks: list[str], audio_only: bool = False):
+                 config: dict, client: dict, context: CheckContext, checks: list[str], audio_only: bool = False,
+                 notes: Sequence[str] | None = None):
         super().__init__(issues)
         self.video, self.srt, self.captions = video, srt, captions
         self.audio_only = audio_only            # an audio file: no picture, no screenshots (clips instead)
         self.config, self.client, self.context, self.checks = config, client, context, checks
+        self.notes: list[str] = list(notes or [])   # a bold line under the report header (e.g. speech skipped)
         self.hidden: list[Issue] = []           # flags ignore.yaml hid
 
     @property
@@ -165,10 +168,14 @@ def run_qc(video_path: str | Path | None, client: str | None = None,
         stage = stages["Transcribing audio"]
         stage(0.0)
         if video is not None and context.settings_for("transcript").get("enabled", False):
-            context.transcript = get_transcript(
-                video, config.get("machine", {}), context.settings_for("transcript"), context.glossary.all_terms(),
-                resolve_path(config, "transcript_cache_dir"), model_dirs(config), progress=stage)
-            context.stats["transcript"] = {"model": config.get("machine", {}).get("whisper_model_size", "base")}
+            if has_audio(video) is False:
+                _mark_no_audio(context)
+            else:
+                context.transcript = get_transcript(
+                    video, config.get("machine", {}), context.settings_for("transcript"), context.glossary.all_terms(),
+                    resolve_path(config, "transcript_cache_dir"), model_dirs(config), progress=stage)
+                context.stats["transcript"] = {"model": config.get("machine", {}).get("whisper_model_size", "base")}
+                _speech_gate(video, context)
         stage(1.0)
 
         issues = run_checks(captions, config, client_data, context, stage=stages["Checking captions"])
@@ -196,9 +203,38 @@ def run_qc(video_path: str | Path | None, client: str | None = None,
         checks.append(f"Ignore list: {len(hidden)} flag{'s' if len(hidden) != 1 else ''} hidden "
                       f"({ignore.ignore_file(config).name})")
     result = QCResult(issues, video=video, srt=srt, captions=captions, config=config, client=client_data,
-                      context=context, checks=checks)
+                      context=context, checks=checks, notes=_speech_notes(context))
     result.hidden = hidden
     return result
+
+
+def _mark_no_audio(context: CheckContext) -> None:
+    """A video with no audio track: the caption-vs-audio comparison has nothing to listen to. This
+    sets a flag only and is never an error (it used to fail the whole run)."""
+    reason = "the file has no audio track"
+    context.stats["speech"] = {"reason": reason}
+    log.info("speech comparison skipped: %s", reason)
+
+
+def _speech_gate(video: Path, context: CheckContext) -> None:
+    """Measure the transcript for the caption-vs-audio skip rule and set a flag. The transcript is
+    left exactly as it is, so the audio-edit checks (E2CL podcasts), which keep their own
+    transcript, always see the same words whether the comparison runs or skips."""
+    settings = context.settings_for("transcript")
+    summary = summarize(context.transcript or [], getattr(context.transcript, "segments", None),
+                        media_duration(video), settings)
+    reason = summary.reason(settings)
+    context.stats["speech"] = {"words": summary.words, "seconds": summary.speech_seconds,
+                               "coverage": summary.coverage, "mean_probability": summary.mean_probability,
+                               "no_speech_share": summary.no_speech_share, "reason": reason}
+    if reason:
+        log.info("speech comparison skipped: %s", reason)
+
+
+def _speech_notes(context: CheckContext) -> list[str]:
+    """The bold line under the report header when the caption-vs-audio comparison skipped."""
+    reason = (context.stats.get("speech") or {}).get("reason")
+    return [f"Speech comparison skipped: {reason}"] if reason else []
 
 
 def _run_audio_file(path: Path, srt: Path | None, config: dict, client: dict, context: CheckContext,
@@ -225,6 +261,7 @@ def _run_audio_file(path: Path, srt: Path | None, config: dict, client: dict, co
             context.transcript = get_transcript(
                 path, config.get("machine", {}), context.settings_for("transcript"), context.glossary.all_terms(),
                 resolve_path(config, "transcript_cache_dir"), model_dirs(config))
+            _speech_gate(path, context)
         issues += run_checks(captions, config, client, context, stage=stages["Checking captions"])
     except (Cancelled, QCError):
         raise
@@ -239,7 +276,7 @@ def _run_audio_file(path: Path, srt: Path | None, config: dict, client: dict, co
         checks.append(f"Ignore list: {len(hidden)} flag{'s' if len(hidden) != 1 else ''} hidden "
                       f"({ignore.ignore_file(config).name})")
     result = QCResult(issues, video=path, srt=srt, captions=captions, config=config, client=client, context=context,
-                      checks=checks, audio_only=True)
+                      checks=checks, audio_only=True, notes=_speech_notes(context))
     result.hidden = hidden
     return result
 
@@ -542,7 +579,10 @@ def check_status_lines(context: CheckContext, video: Path | None, options: QCOpt
                 shown = ", ".join(f'"{t}"' for t in context.screen_text[:5]) or "none found"
                 lines.append(f"{title}: on-screen text read: {shown}")
         elif name == "transcript":
-            if context.transcript is None:
+            reason = (context.stats.get("speech") or {}).get("reason")
+            if reason:
+                lines.append(f"{title}: skipped ({reason})")
+            elif context.transcript is None:
                 lines.append(f"{title}: not run (no video)")
             else:
                 model = context.stats.get("transcript", {}).get("model", "?")
@@ -616,7 +656,8 @@ def write_report(result: QCResult, formats: Sequence[str] | None = None,
                       rules_version=rules_version, checks=result.checks, app_version=__version__,
                       client_rules_version=client_rules_version(config, result.client.get("client")),
                       audio_only=getattr(result, "audio_only", False),
-                      audio_regions=list((result.context.stats.get("audio") or {}).get("regions") or []))
+                      audio_regions=list((result.context.stats.get("audio") or {}).get("regions") or []),
+                      notes=list(getattr(result, "notes", []) or []))
     return build_report(result.captions, list(result), info, settings, ffmpeg)
 
 

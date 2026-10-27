@@ -1,0 +1,30 @@
+# Client rules for E2CS: the audio podcast episodes. Audio only - the audio-edit checks are what
+# this client is checked for (src/audio/edits.py); captions and picture are not.
+#
+# The "audio:" block is merged over config.yaml's defaults (src/engine.py audio_settings), so only
+# the values that differ for E2CS are spelled out here. clients/E2CL.yaml holds the complete,
+# commented set of every audio threshold, and config.yaml's "audio:" holds the defaults.
+#
+# Known gap (measured 2026-10 over 5 episodes / 175.7 min, 154 scoreable audio notes):
+#   stutter          68 notes   0% recall   64 flags
+#   repeated_phrase  39 notes   3% recall  100 flags
+#   abrupt_cut       27 notes   4% recall  183 flags (1% precision)
+#   dead_air         12 notes   0% recall    4 flags
+#   jump_cut          8 notes   0% recall   12 flags
+# Whisper writes down only about a tenth of the disfluencies the client hears, so the
+# transcript-based repeat check (transcript_repeats) has a ~9% ceiling on these notes (23% if the
+# note time is allowed to be up to 15 s early) - see scripts/audio_diagnostics.py. The sound-based
+# one (acoustic_repeats) finds nothing at all on real speech: its similarity gate is only ever
+# reached by sustained sounds, which its "not a held note" margin test then rejects, and loosening
+# the thresholds was measured to buy a handful of hits for dozens of false alarms.
+#
+# So the audio thresholds are left at their defaults on purpose. (A dead_air_sec of 1.5 was tried
+# and reverted here: it added 3 dead-air false alarms and found no more of the client's notes.)
+client: E2CS
+name: Audio podcast
+language: en
+notes: Audio-only podcast episodes. Edit QC (stutters, repeats, cuts, dead air); no captions or picture.
+overrides: {}
+audio:
+  enabled: true                  # on for this client's audio files and videos
+  sensitivity: medium            # low / medium / high

@@ -121,6 +121,28 @@ def test_local_yaml_overrides_this_pc_only(floor):
     assert load_config()["machine"]["whisper_model_size"] in ("base", "small")
 
 
+def test_the_shared_config_cannot_set_machine_settings(floor):
+    (floor.shared_dir / "config.yaml").write_text(
+        "machine:\n  ffmpeg_path: '\\\\\\\\server\\\\share\\\\not-ffmpeg.exe'\n  whisper_model_size: tiny\n"
+        "checks:\n  too_short:\n    min_words: 3\n", encoding="utf-8")
+    time.sleep(0.01)
+    assert floor.sync()
+    config = load_config()
+    assert config["machine"]["ffmpeg_path"] is None                         # the app's own value
+    assert config["machine"]["whisper_model_size"] in ("base", "small")    # "auto" from the app's own config
+    assert config["checks"]["too_short"]["min_words"] == 3                  # the rest of the shared file still applies
+
+
+def test_local_yaml_still_sets_ffmpeg_on_the_floor(floor, tmp_path):
+    ffmpeg = tmp_path / "ffmpeg.exe"
+    (floor.shared_dir / "config.yaml").write_text("machine:\n  ffmpeg_path: elsewhere.exe\n", encoding="utf-8")
+    time.sleep(0.01)
+    assert floor.sync()
+    save_local_settings(floor.local_dir, {"machine": {"ffmpeg_path": str(ffmpeg), "ffmpeg_timeout_sec": 60}})
+    machine = load_config()["machine"]
+    assert machine["ffmpeg_path"] == str(ffmpeg) and machine["ffmpeg_timeout_sec"] == 60
+
+
 def test_mirror_keeps_the_copy_when_the_clients_folder_vanishes_for_a_moment(tmp_path):
     src, dst = tmp_path / "s", tmp_path / "d"
     (src / "clients").mkdir(parents=True)

@@ -3,13 +3,16 @@
 # under "overrides:", using the same structure as the "checks:" block below.
 
 # --- Machine-specific settings ---
-# On the QC floor each PC can override these in its own local.yaml (Settings > Speech model), so one
-# shared config.yaml suits every PC.
+# On the QC floor this block is read from the app's own config.yaml and each PC's local.yaml
+# (Settings > Speech model) only; a machine: block in the SHARED config.yaml is ignored, because
+# ffmpeg_path names a program every PC would run.
 machine:
   whisper_model_size: auto     # auto = picked from the CPU and memory (base under 4 cores or 8 GB, else small);
                                # or tiny / base / small / medium
   cpu_threads: auto            # auto = half the cores, so editing on the same PC stays smooth; or a number
   ffmpeg_path: null            # null = find "ffmpeg" on PATH; or the full path to the ffmpeg program
+  ffmpeg_timeout_sec: 900      # one ffmpeg call (audio of a whole video, a frame, a clip) is stopped after this
+                               # long, so a damaged video can't hang the check; null or 0 = no limit
 
 paths:
   rules_file: rules.yaml
@@ -198,6 +201,14 @@ checks:
     uncaptioned_max_pause_sec: 1.5   # a longer pause splits it into separate stretches
     edge_slack_sec: 0.2
     ignore_spoken_repeats: true      # a stutter ("to to") the caption leaves out is not a caption mistake
+    # Not enough speech to compare captions with (a clip that is mostly music, a silent track, or no
+    # audio at all): the caption-vs-audio checks skip themselves and the report says why - never an
+    # error. A client changes any of these with an "overrides:" block in its client file.
+    min_words: 10                    # fewer transcribed words than this in the whole audio, or...
+    min_speech_coverage: 0.05        # ...speech covering under this share of the audio (0.05 = 5%), or...
+    min_mean_word_probability: 0.5   # ...words Whisper wasn't this sure of on average (guesses over music), or...
+    no_speech_probability: 0.6       # ...Whisper's own segments this sure a stretch has no speech, over...
+    no_speech_share: 0.5             # ...this share of the audio: music or noise, not speech.
     # Ignored on both sides. Quoted: some short words are special in YAML.
     fillers: ["um", "umm", "uh", "uhh", "ah", "ahh", "er", "erm", "hmm", "mm", "mhm"]
     # Different ways of writing the same spoken words.

@@ -42,7 +42,11 @@ def floating_window_flags():
 def prepare_floating_window(widget) -> None:
     from PySide6.QtCore import Qt
 
+    from PySide6.QtGui import QGuiApplication
+
     widget.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow, True)   # stay visible when inactive
+    if QGuiApplication.platformName() != "cocoa":
+        return      # e.g. offscreen in the tests: winId() isn't an NSView, and messaging it crashes
     try:
         objc = _Objc()
         ns_view = ctypes.c_void_p(int(widget.winId()))

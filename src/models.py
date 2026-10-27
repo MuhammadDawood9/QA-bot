@@ -121,6 +121,8 @@ class Issue:
     suggestion: str = ""
     confidence: float = 1.0
     signals: str = ""     # what the flag rests on (audio checks: each piece of evidence and its weight)
+    screenshot_at: float | None = None   # grab the report's frame here instead of timestamp (a merged
+                                         # color range: the worst measured frame in the range)
 
     def __post_init__(self) -> None:
         if self.severity not in SEVERITIES:

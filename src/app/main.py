@@ -89,11 +89,13 @@ class CompanionApp:
 
     @property
     def default_reports_dir(self) -> Path:
-        """The project's reports/ folder when run from source; Documents/Video QC Bot reports when packaged."""
+        """The project's reports/ folder when run from source; the local app data folder when
+        packaged (%LOCALAPPDATA%\\VideoQCBot\\data\\reports): Windows "Controlled folder access"
+        can block Documents, the app data folder is never protected."""
         if is_frozen():
-            import platformdirs
+            from src.config import user_data_root
 
-            return platformdirs.user_documents_path() / "Video QC Bot reports"
+            return user_data_root() / "reports"
         return Path(self.config["_root"]) / self.config.get("report", {}).get("output_dir", "reports")
 
     @property
@@ -318,12 +320,13 @@ class CompanionApp:
         self.status = f"{stage}: {video}, {fraction:.0%}{self._waiting()}"
         self.mascot.set_progress(stage, fraction)
 
-    def _on_finished(self, count: int, report: str) -> None:
+    def _on_finished(self, count: int, report: str, note: str = "") -> None:
         video = self.runner.video.name if self.runner.video else "the video"
         self.mascot.set_state("done", count)
         self.settings.set("last_report", report)
-        self.status = f"Done: {count} issue{'s' if count != 1 else ''} in {video}{self._waiting()}"
-        self.notify("QC check done", f"{count} issue{'s' if count != 1 else ''} found in {video}."
+        extra = f" {note}" if note else ""
+        self.status = f"Done: {count} issue{'s' if count != 1 else ''} in {video}{extra}{self._waiting()}"
+        self.notify("QC check done", f"{count} issue{'s' if count != 1 else ''} found in {video}.{extra}"
                                      + (f" Next: {self.queue[0].name}{self._waiting()}." if self.queue else ""))
         if self.settings.get("open_report") and not self.queue:     # in a batch, only the last one opens
             open_path(Path(report))

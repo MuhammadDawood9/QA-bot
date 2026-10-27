@@ -586,8 +586,8 @@ def main(argv=None) -> int:
         flags, length, took = [], 0.0, 0.0
         if path.suffix.lower() in {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}:
             areas &= {"audio", "caption"}                                       # no picture in an audio file
-        for name, check in (("caption", caption_flags), ("color", color_flags), ("audio", audio_flags)):
-            if name in areas & wanted:
+        for check_name, check in (("caption", caption_flags), ("color", color_flags), ("audio", audio_flags)):
+            if check_name in areas & wanted:
                 found, seconds, spent = check(path, client, config)
                 flags += found
                 length, took = max(length, seconds), took + spent

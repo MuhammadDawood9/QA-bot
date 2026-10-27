@@ -121,6 +121,85 @@ def test_cast_names():
     assert cast_name(10, -9) == "cool/blue and magenta"
 
 
+# --- repeated flags become one issue ----------------------------------------------------------
+
+def flat(black=70, white=200):
+    return dict(black_level=black, white_level=white)          # triggers "Washed-out, lifted blacks"
+
+
+def test_identical_flags_in_one_shot_are_one_issue():
+    issues = color_issues([shot(black_level=70, white_level=200)], SETTINGS)
+    assert len(issues) == 1 and issues[0].type == FLAT_CONTRAST
+    assert issues[0].timestamp == 2.0                          # a single shot keeps its own timestamp
+
+
+def test_same_flag_in_adjacent_shots_becomes_one_range():
+    shots = [shot(1, 0, 4), shot(2, 4, 8, **flat(70)), shot(3, 8, 12, **flat(80)), shot(4, 12, 20)]
+    [issue] = [i for i in color_issues(shots, SETTINGS) if i.type == FLAT_CONTRAST]
+    assert issue.timestamp == 4.0                              # the start of the range
+    assert "Washed-out, lifted blacks from 00:04.000 to 00:12.000" in issue.message
+    assert "(blacks at 70-80/255)" in issue.message
+    assert issue.severity == "medium" and shot_number(issue.caption_id) == 2
+    assert issue.original == "Shots 2-3, 00:04.000 - 00:12.000"
+    assert "2 shots, 2 frames" in issue.signals
+    assert "typical blacks at 75/255" in issue.signals and "worst blacks at 80/255" in issue.signals
+    assert issue.screenshot_at == 0.0                          # the worst frame (all frames sit at t=0)
+
+
+def test_same_flag_in_shots_far_apart_stays_two_issues():
+    shots = [shot(1, 0, 4, **flat(70)), shot(2, 4, 16), shot(3, 16, 20, **flat(80))]
+    issues = [i for i in color_issues(shots, SETTINGS) if i.type == FLAT_CONTRAST]
+    assert len(issues) == 2
+    assert [i.timestamp for i in issues] == [2.0, 18.0]        # singles keep their shot's middle
+
+
+def test_two_issue_types_in_one_shot_stay_two_issues():
+    issues = color_issues([shot(black_level=70, white_level=200, chroma=3)], SETTINGS)
+    assert sorted(i.type for i in issues) == [FLAT_CONTRAST, SATURATION]
+
+
+def test_gap_larger_than_the_tolerance_splits_the_range():
+    shots = [shot(1, 0, 4, **flat(70)), shot(2, 6, 10, **flat(70)), shot(3, 12, 16), shot(4, 16, 20)]
+    assert len(color_issues(shots, {**SETTINGS, "merge_gap_sec": 1.0})) == 2
+    [merged] = color_issues(shots, {**SETTINGS, "merge_gap_sec": 3.0})
+    assert merged.timestamp == 0.0
+    assert "Washed-out, lifted blacks from 00:00.000 to 00:10.000" in merged.message
+
+
+def test_one_condition_over_the_whole_video_is_reported_once_with_the_skip_line():
+    shots = [shot(1, 0, 4, **flat(70)), shot(2, 4, 8, **flat(72)), shot(3, 8, 12, **flat(74))]
+    [issue] = color_issues(shots, SETTINGS)
+    assert issue.type == FLAT_CONTRAST and issue.timestamp == 0.0
+    assert "over the whole video" in issue.message
+    assert "may be the look the client wants" in issue.message
+    assert "color: {skip: [flat_contrast]}" in issue.message
+
+
+def test_the_worst_frame_is_used_for_the_screenshot():
+    def frames(times, blacks):
+        return [FrameStats(t=t, luma_median=128, black_level=b, white_level=200, clipped_white=0.0,
+                           clipped_black=0.0, chroma=15, cast_a=0.0, cast_b=1.0)
+                for t, b in zip(times, blacks)]
+
+    shots = [Shot(1, 0, 4, frames([0.0, 2.0], [70, 71])), Shot(2, 4, 8, frames([4.0, 5.5], [90, 60]))]
+    [issue] = color_issues(shots, SETTINGS)
+    assert issue.screenshot_at == 4.0                          # the frame with the worst (highest) blacks
+    assert "blacks at 70-75/255" in issue.message
+
+
+def test_merging_runs_on_the_cached_measurements(tmp_path):
+    """The measured shots in the cache are untouched; merging happens after they are read, so an
+    existing cache doesn't have to be measured again."""
+    from src.video.color import load_shots, save_shots
+
+    shots = [shot(1, 0, 4), shot(2, 4, 8, **flat(70)), shot(3, 8, 12, **flat(80)), shot(4, 12, 20)]
+    cache = tmp_path / "c.json"
+    save_shots(cache, Path("clip.mp4"), shots)
+    [issue] = color_issues(load_shots(cache), SETTINGS)
+    assert issue.type == FLAT_CONTRAST
+    assert "from 00:04.000 to 00:12.000" in issue.message
+
+
 # --- shots that don't match ------------------------------------------------------------------
 
 def test_skin_jump_between_cameras():
@@ -229,3 +308,23 @@ def test_planted_grading_mistakes_are_found():
             assert e["shot"] not in found, (e, found.get(e["shot"]))
         else:
             assert e["expected"] in found.get(e["shot"], set()), (e, found.get(e["shot"]))
+
+
+@pytest.mark.slow
+def test_burned_in_sample_flat_contrast_is_reported_once():
+    """Every shot of the subtitle sample has the same grey background, so the flat_contrast flag
+    used to repeat once per shot; the merge must report the condition once for the whole video."""
+    video = SAMPLES / "burned_subtitle.mp4"
+    if not video.exists():
+        pytest.skip("run: python scripts/make_burned_in_samples.py")
+    from src.video.color import read_color
+
+    shots = read_color(video, SETTINGS, None, None, None)
+    issues = color_issues(shots, SETTINGS)
+    flat = [i for i in issues if i.type == FLAT_CONTRAST]
+    assert len(shots) > 5
+    assert len(flat) == 1, [i.timestamp for i in flat]
+    assert len(issues) < 39 and len(issues) < len(shots)       # one flag, not one per shot
+    assert "over the whole video" in flat[0].message
+    assert "color: {skip: [flat_contrast]}" in flat[0].message
+    assert flat[0].timestamp == round(shots[0].start, 3)       # the start of the range

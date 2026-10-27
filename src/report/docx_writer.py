@@ -263,6 +263,11 @@ def write_docx(data: ReportData) -> Path:
         p.paragraph_format.space_after = Pt(0)
         for line in info.checks:
             doc.add_paragraph(clean(line), style="List Bullet")
+    for note in info.notes:
+        p = doc.add_paragraph()
+        p.add_run(clean(note)).bold = True
+        p.paragraph_format.space_before = Pt(6)
+        p.paragraph_format.space_after = Pt(0)
 
     # Summary: counts per issue type
     doc.add_heading("Summary", level=1)

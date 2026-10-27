@@ -94,6 +94,17 @@ def test_flagged_rows_are_bold_and_shaded(tmp_path):
     assert not any(r.bold for r in plain.cells[2].paragraphs[0].runs)
 
 
+def test_a_speech_skip_note_is_a_bold_paragraph(tmp_path):
+    info_ = ReportInfo(srt=Path("clip.srt"), video=None, client="E3JB", rules_version="2026-10-12",
+                       checks=["Spelling: ran"], generated=WHEN,
+                       notes=["Speech comparison skipped: only 1 word in 27 s (coverage 4%)"])
+    settings = {"output_dir": tmp_path / "reports", "formats": ["docx"], "include_screenshots": True,
+                "screenshot_at": "middle", "screenshot_width": 640, "write_csv": False}
+    _, doc = docx_of(build_report(CAPTIONS, ISSUES, info_, settings, None))
+    notes = [p for p in doc.paragraphs if p.text.startswith("Speech comparison skipped")]
+    assert notes and notes[0].runs[0].bold
+
+
 def test_rows_never_split_across_pages(tmp_path):
     _, doc = docx_of(make(tmp_path))
     issues = doc.tables[1]

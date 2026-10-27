@@ -85,6 +85,14 @@ def test_wrong_typed_setting_falls_back_to_default(tmp_path):
 
 # --- the background worker -------------------------------------------------------------------
 
+class FakeResult(list):
+    """Stands in for a QCResult: the issues, plus the notes the report would carry."""
+
+    def __init__(self, issues, notes=()):
+        super().__init__(issues)
+        self.notes = list(notes)
+
+
 class FakeEngine:
     """Stands in for run_qc / build_docx_report: reports progress, honours cancel."""
 
@@ -92,6 +100,7 @@ class FakeEngine:
         self.tmp_path, self.issues, self.fail, self.steps, self.delay = tmp_path, issues, fail, steps, delay
         self.thread = None
         self.calls = []
+        self.notes = []
 
     def run_qc(self, video, client, progress_cb, cancel_event, *, options=None, config=None):
         self.thread = threading.current_thread()
@@ -103,7 +112,7 @@ class FakeEngine:
             time.sleep(self.delay)
         if self.fail:
             raise self.fail
-        return ["issue"] * self.issues
+        return FakeResult(["issue"] * self.issues, self.notes)
 
     def build_docx_report(self, result, output_dir=None):
         path = self.tmp_path / "clip_QC_2026-10-12.docx"
@@ -133,7 +142,7 @@ def runner(app, fake):
 def run_and_collect(runner, video=Path("clip.mp4")):
     seen = {"progress": [], "finished": None, "failed": None, "cancelled": False}
     runner.progress.connect(lambda s, f: seen["progress"].append((s, f)))
-    runner.finished.connect(lambda n, p: seen.__setitem__("finished", (n, p)))
+    runner.finished.connect(lambda n, p, note: seen.__setitem__("finished", (n, p, note)))
     runner.failed.connect(lambda m: seen.__setitem__("failed", m))
     runner.cancelled.connect(lambda: seen.__setitem__("cancelled", True))
     runner.start(video, "E8D", qc_options([]))
@@ -146,8 +155,16 @@ def test_worker_runs_off_the_ui_thread_and_reports_back(app, fake, runner):
     assert wait_for(lambda: seen["finished"] is not None)
     assert fake.thread is not threading.main_thread()
     assert seen["finished"][0] == 3 and seen["finished"][1].endswith(".docx")
+    assert seen["finished"][2] == ""                                  # no speech skip: no note
     assert [s for s, _ in seen["progress"]][-1] == "Writing the report"
     assert wait_for(lambda: not runner.busy)
+
+
+def test_worker_passes_the_speech_skip_note_to_the_app(app, fake, runner):
+    fake.notes = ["Speech comparison skipped: only 1 word in 27 s (coverage 4%)"]
+    seen = run_and_collect(runner)
+    assert wait_for(lambda: seen["finished"] is not None)
+    assert seen["finished"][2].startswith("Speech comparison skipped:")
 
 
 def test_worker_failure_gives_the_engine_message(app, fake, runner):
@@ -266,6 +283,16 @@ def test_finished_check_shows_the_count_and_opens_the_report(companion, settings
     assert fake.calls[0][1] == "E8D"                                # client from the file name
     assert companion.opened == [Path(settings.get("last_report"))]
     assert companion.status.startswith("Done: 3 issues")
+
+
+def test_finished_check_says_when_the_speech_comparison_skipped(companion, fake):
+    notes = []
+    companion.notify = lambda title, message, error=False: notes.append((title, message))
+    fake.notes = ["Speech comparison skipped: only 1 word in 27 s (coverage 4%)"]
+    companion.start_check(Path("clip.mp4"))
+    assert wait_for(lambda: companion.mascot.state == "done")
+    assert "Speech comparison skipped" in companion.status
+    assert any("Speech comparison skipped" in message for _, message in notes)
 
 
 def test_report_is_not_opened_when_switched_off(companion, settings):

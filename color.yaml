@@ -73,6 +73,16 @@ defaults:
   mismatch_cast: 8              # tint difference (Lab distance) from the video's typical shot
   mismatch_chroma: 12           # saturation difference from the video's typical shot
 
+  # --- Merging repeated flags (applied to the cached measurements, so changing them is free) ------
+  # One flag per problem, not one per shot: the same flag on consecutive shots (no further apart
+  # than merge_gap_sec between them) is reported once, covering the whole range, with the typical
+  # and worst measured value. A bigger gap (an unflagged shot, a calm stretch) starts a new flag.
+  merge_gap_sec: 2.0
+  # A flag covering at least this share (0-1) of the video's duration, or of its shots, is reported
+  # once as "the whole video", with a note that this may be the intended look and the line for a
+  # client file that skips it: color: {skip: [<type>]}. It may be the grade the client asked for.
+  whole_video_share: 0.8
+
 # Per-client overrides: the client code, then only the keys that differ from "defaults".
 # Example:
 #   clients:

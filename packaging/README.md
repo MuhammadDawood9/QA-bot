@@ -21,7 +21,7 @@ Where a built app keeps things (never inside itself, so updates don't wipe them)
 |---|---|---|
 | Your editable config, rules, clients, glossary (copied on first run, never overwritten) | `%LOCALAPPDATA%\VideoQCBot\data\` | `~/Library/Application Support/VideoQCBot/data/` |
 | Cache and models | the same `data\` folder | the same `data/` folder |
-| Reports (default; change in Settings) | `Documents\Video QC Bot reports` | `~/Documents/Video QC Bot reports` |
+| Reports (default; change in Settings) | `%LOCALAPPDATA%\VideoQCBot\data\reports` | `~/Library/Application Support/VideoQCBot/data/reports` |
 | App settings | `%LOCALAPPDATA%\VideoQCBot\settings.json` | `~/Library/Application Support/VideoQCBot/settings.json` |
 | Log | `%LOCALAPPDATA%\VideoQCBot\Logs\videoqcbot.log` | `~/Library/Logs/VideoQCBot/videoqcbot.log` |
 
