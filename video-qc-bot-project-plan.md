@@ -14,24 +14,26 @@ I work as a QA reviewer for videos. I catch caption mistakes, color grading prob
 
 ## 2. Scope
 
-### In scope (V1)
-- Caption checks:
-  - **Too-short captions** (a single word on screen; minimum is 2–3 words)
-  - **Spelling mistakes**
-  - **Punctuation mistakes** (missing or wrong full stops, commas, etc.)
-- Timestamped report document with screenshots
+### In scope
+- **Caption checks (SRT and OCR)**: too-short/phrase break, spelling, capitalization, spacing, repeated words, punctuation style (rule-based: question marks, the client's full-stop style, trailing and excess commas), punctuation (LLM, off by default), Whisper speech comparison (wrong/missing/extra/early), on-screen text / OCR, caption sync/late/uncaptioned speech, screen-text mismatches.
+- **Whisper speech comparison**: transcript vs captions with alignment, cached transcripts, glossary as initial prompt.
+- **On-screen text**: OCR of burned-in captions and whole-frame on-screen text (RapidOCR), region detection, grouping.
+- **Color checks (merged per shot)**: per-shot measurements (exposure, contrast, blacks, saturation, color cast, skin tone), shot-to-shot matching, HDR skipped with note.
+- **Audio-edit checks (E2CL/E2CS)**: stutter, repeated_phrase/retakes, abrupt_cut/jump_cut, dead_air; music and overlap handling; Whisper with VAD/prompt considerations; audio-only files supported.
+- **Desktop mascot app**: floating PySide6 app with drag/drop, queue, progress, tray/menu, skins/glow/blinks, start-at-login, packaging.
+- **Client add/edit**: in-app client editor with template/import (workbook/CSV/PDF/Claude), validation, backups/changelog, per-client config/ignore/glossary.
+- **Multi-PC shared data**: shared folder sync/cached copy, roles/PIN, locks, shared reports/models, offline fallback, per-PC limits.
+- **Technical delivery checks** (`src/delivery/`): format against the client's spec (resolution, aspect, frame rate, duration, bitrate, audio), loudness and true peak, clipping, black/frozen/flash frames, safe area for reels; voice under music experimental and off by default.
+- **Report output**: Word (.docx), Markdown, CSV; screenshots/waveforms/clips for issues; grouped per caption/issue with links.
 
 ### Planned later (V2+)
-- Shot-to-shot color consistency checks (measured, not guessed)
-- Out-of-range values (clipped highlights, crushed blacks, saturation spikes)
 - Creative-direction checks against a written brief or style guide
-- Pull past QC comments from ClickUp automatically
-- Side-panel or small web UI
+- Pull/post QC comments from ClickUp automatically
+- Extended UI/dashboard features beyond the desktop mascot app
 
-### Out of scope for now
+### Out of scope
 - True live capture while the video plays
 - Judging calibrated color by eye (a vision model can't replace scopes and a calibrated monitor)
-- Audio and subtitle sync
 
 ---
 
@@ -334,55 +336,75 @@ video-qc-bot/
 ## 12. Build plan (milestones)
 
 ### Milestone 1: Skeleton + too-short check
-- [ ] Set up repo, virtual env, `requirements.txt`
-- [ ] Define `Caption` and `Issue` models
-- [ ] Build SRT loader
-- [ ] Build too-short check with config and whitelist
-- [ ] CLI: `python -m src.main video.mp4 --srt captions.srt`
-- [ ] Print issues to the terminal
-- [ ] Unit tests for the too-short rules
+- [x] Set up repo, virtual env, `requirements.txt`
+- [x] Define `Caption` and `Issue` models
+- [x] Build SRT loader
+- [x] Build too-short check with config and whitelist
+- [x] CLI: `python -m src.main video.mp4 --srt captions.srt`
+- [x] Print issues to the terminal
+- [x] Unit tests for the too-short rules
 
 ### Milestone 2: Spelling
-- [ ] Integrate spellchecker
-- [ ] Add glossary and forced-spelling support
-- [ ] Tests with real examples from ClickUp
+- [x] Integrate spellchecker (pyspellchecker)
+- [x] Add glossary and forced-spelling support
+- [x] Tests with real examples from ClickUp
 
 ### Milestone 3: Report
-- [ ] Extract screenshots at issue timestamps
-- [ ] Markdown report with summary and issue table
-- [ ] Appendix with full transcript
+- [x] Extract screenshots at issue timestamps
+- [x] Markdown report with summary and issue table
+- [x] Appendix with full transcript
+- [x] Word (.docx) and CSV reports
 
 ### Milestone 4: Punctuation with the LLM
-- [ ] Prompt with rules and real examples
-- [ ] Windowed context, batching, JSON parsing, caching
-- [ ] Confidence threshold
-- [ ] Run against the test set and record results
+- [x] Prompt with rules and real examples
+- [x] Windowed context, batching, JSON parsing, caching
+- [x] Confidence threshold
+- [x] Run against the test set and record results
 
 ### Milestone 5: Burned-in caption support (if needed)
-- [ ] Frame sampling and caption-region cropping
-- [ ] OCR plus grouping into captions
-- [ ] Change detection to skip unchanged frames
-- [ ] Compare OCR captions to the SRT when both exist
+- [x] Frame sampling and caption-region cropping
+- [x] OCR plus grouping into captions (RapidOCR)
+- [x] Change detection to skip unchanged frames
+- [x] Compare OCR captions to the SRT when both exist
 
 ### Milestone 6: Testing and tuning
-- [ ] Run on past videos, compare against my ClickUp comments
-- [ ] Measure **recall** (how many real issues it caught) and **precision** (how many flags were real)
-- [ ] Adjust rules, thresholds, and exceptions
-- [ ] Decide which check types are trustworthy enough to rely on
+- [x] Run on past videos, compare against my ClickUp comments
+- [x] Measure **recall** (how many real issues it caught) and **precision** (how many flags were real)
+- [x] Adjust rules, thresholds, and exceptions
+- [x] Decide which check types are trustworthy enough to rely on
 
-### Milestone 7 (V2): Color consistency
-- [ ] Shot-change detection (PySceneDetect)
-- [ ] Per-shot metrics: average luminance, white balance, saturation, clipped highlights, crushed blacks
-- [ ] Flag shot-to-shot jumps above a threshold
-- [ ] Optional vision-model commentary on flagged shots
+### Milestone 7: Color consistency
+- [x] Shot-change detection (color-histogram)
+- [x] Per-shot metrics: average luminance, white balance, saturation, clipped highlights, crushed blacks, cast, skin tone
+- [x] Flag shot-to-shot jumps above a threshold
+- [x] Face/skin matching across shots
 
-### Milestone 8 (V2): Creative direction
+### Milestone 8: Creative direction
 - [ ] Write the brief or style guide as structured input
 - [ ] Vision-model pass on sampled frames checked against the brief
 
-### Milestone 9 (V2): Integrations and UI
+### Milestone 9: Integrations and UI
 - [ ] ClickUp API: pull comments, post findings
-- [ ] Simple web or desktop UI to pick a file and view the report
+- [x] Desktop mascot app (PySide6), queue, client add/edit, multi-PC shared data
+
+### Milestone 10: Audio-edit checks
+- [x] Audio input/decoding (mp3/wav/m4a/aac/flac/ogg/opus/wma/aif)
+- [x] E2CL audio-edit checks (stutter, repeated_phrase/retakes, abrupt_cut/jump_cut, dead_air)
+- [x] Music and overlap handling considerations
+- [x] Audio report with clips/waveforms
+
+### Milestone 11: Technical delivery checks
+- [x] Format against each client's delivery spec (`delivery:` in config.yaml and client files)
+- [x] Loudness (integrated LUFS) and true peak; clipping
+- [x] Black, frozen and flash frames from the single decode
+- [x] Safe area for burned-in captions on reels
+- [ ] Voice under music: validate on real podcasts before switching on
+
+### Milestone 12: Rule-based punctuation
+- [x] `punctuation_style` check: questions ending in "." or "!", full-stop style, trailing and excess commas
+- [x] `capitalization.sentence_start_capital` (off by default)
+- [x] Per-client styles (E3RK, E8D, E2AB, E8C)
+- [ ] Commas inside a sentence and apostrophes (still need the AI check)
 
 ---
 

@@ -1,11 +1,22 @@
 {
   "version": 1,
   "skills": {
+    "code-review": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/code-review/SKILL.md",
+      "computedHash": "1846141c77eaada59e449d831720ac1fd3f99e5cb22c30ed42ea5e4d14bd3cda"
+    },
     "grammar-check": {
       "source": "phuryn/pm-skills",
       "sourceType": "github",
       "skillPath": "pm-toolkit/skills/grammar-check/SKILL.md",
       "computedHash": "543ee9e41682444e3ad9f411e443cfbd547620afc83745583c2de697509f9cc7"
+    },
+    "python-docx": {
+      "source": "C:\\Users\\LENOVO~1\\AppData\\Local\\Temp\\workspace-hub",
+      "sourceType": "local",
+      "computedHash": "363cdcfae25b9d6e27615c96ea1e0e904c570b91c1f8abb5edd2d7424a9417bc"
     }
   }
 }
