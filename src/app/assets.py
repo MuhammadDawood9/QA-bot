@@ -23,7 +23,11 @@ transparent background, no glow: the app draws that) and a skin.json:
         thin bright ring on the border.
 
     "glow": {...}       (optional) colors, strengths and timings of the glow; see DEFAULT_GLOW. Missing
-        or invalid values fall back to the defaults, so a skin can set just one color.
+        or invalid values fall back to the defaults, so a skin can set just one color. The glow
+        colors also color the app's menus and windows (src/app/theme.py).
+
+    "badge": "#RRGGBB"  (optional) the issue-count badge and the progress ring; default: the
+        "working" glow color
 """
 
 from __future__ import annotations
@@ -98,6 +102,11 @@ class Skin:
     state_eyes: dict = field(default_factory=lambda: dict(DEFAULT_STATE_EYES))
     shape: str = "free"                        # "free" or "circle"
     glow: dict = field(default_factory=lambda: copy.deepcopy(DEFAULT_GLOW))
+    badge_color: str | None = None             # None: the "working" glow color
+
+    @property
+    def badge(self) -> str:
+        return self.badge_color or self.glow["working"]["color"]
 
     def can_blink(self, state: str) -> bool:
         return self.eyes == "drawn" or state in self.blink_icons
@@ -150,8 +159,12 @@ def read_skin_json(path: Path) -> dict:
     if outline not in SHAPES:
         log.warning("%s: shape must be \"free\" or \"circle\", not %r; using free", path, outline)
         outline = "free"
+    badge = data.get("badge")
+    if badge is not None and not (isinstance(badge, str) and _COLOR.match(badge)):
+        log.warning("%s: badge must be a #RRGGBB color, not %r; using the working glow color", path, badge)
+        badge = None
     return {"name": str(data.get("name") or path.parent.name), "eyes": eyes, "eye_shape": shape,
-            "state_eyes": state_eyes, "shape": outline, "glow": read_glow(data.get("glow"), path)}
+            "state_eyes": state_eyes, "shape": outline, "glow": read_glow(data.get("glow"), path), "badge": badge}
 
 
 def _valid(value, default) -> bool:
@@ -222,7 +235,7 @@ def load_skin(key: str | None = None, base: Path | None = None) -> Skin:
     folder = base / key
     meta = read_skin_json(folder / "skin.json") if (folder / "skin.json").is_file() else read_skin_json(Path("-"))
     skin = Skin(key=key, name=meta["name"], eyes=meta["eyes"], folder=folder, eye_shape=meta["eye_shape"],
-                state_eyes=meta["state_eyes"], shape=meta["shape"], glow=meta["glow"])
+                state_eyes=meta["state_eyes"], shape=meta["shape"], glow=meta["glow"], badge_color=meta["badge"])
     for state in STATES:
         icon = load_icon(folder / f"{state}.png")
         skin.icons[state] = circle_icon(icon) if skin.shape == "circle" and not icon.isNull() else icon

@@ -9,6 +9,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
                                QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QVBoxLayout, QWidget)
 
+from src.app import theme
 from src.app.settings import Settings, config_dir, log_dir
 
 
@@ -50,45 +51,74 @@ class SettingsDialog(QDialog):
         self.guess = QCheckBox("Take the client from the file name when it contains a client code")
         self.guess.setChecked(bool(settings.get("guess_client")))
 
-        form = QFormLayout()
-        form.addRow("Reports folder:", row)
-        if floor_text is not None:
-            change = QPushButton("Change...")
-            change.clicked.connect(lambda: on_change_floor and on_change_floor(self))
-            floor_row = QHBoxLayout()
-            floor_row.addWidget(QLabel(floor_text), 1)
-            floor_row.addWidget(change)
-            form.addRow("Shared rules:", floor_row)
+        reports = theme.card("Reports")
+        reports_layout = QVBoxLayout(reports)
+        reports_layout.setContentsMargins(12, 4, 12, 8)
+        reports_layout.addLayout(row)
+        reports_layout.addWidget(theme.hint("Leave it empty to use the project's reports/ folder."))
+        reports_layout.addWidget(self.open_report)
+
+        checks = theme.card("When a check runs")
+        checks_layout = QVBoxLayout(checks)
+        checks_layout.setContentsMargins(12, 4, 12, 8)
+        checks_layout.addWidget(self.guess)
+        checks_layout.addWidget(self.notifications)
+
         self.model = None
         if whisper_model is not None:
             self.model = QComboBox()
             for key, label in WHISPER_CHOICES:
                 self.model.addItem(label + (f": {auto_model} here" if key == "auto" and auto_model else ""), key)
             self.model.setCurrentIndex(max(0, self.model.findData(whisper_model)))
-            form.addRow("Speech model (this PC):", self.model)
         self.copy_shared = None
         if shared_reports is not None:
             chosen = settings.get("copy_reports_to_shared")
             self.copy_shared = QCheckBox(f"Also copy each report to the shared reports folder ({shared_reports})")
             self.copy_shared.setChecked(shared_copy_default if chosen is None else bool(chosen))
-        if on_set_pin is not None:
-            pin = QPushButton("Set editor PIN...")
-            pin.clicked.connect(lambda: on_set_pin(self))
-            form.addRow("Editors:", pin)
+        floor = None
+        if floor_text is not None or self.model is not None or self.copy_shared is not None or on_set_pin is not None:
+            floor = theme.card("This PC and the shared floor")
+            form = QFormLayout(floor)
+            form.setContentsMargins(12, 4, 12, 8)
+            form.setHorizontalSpacing(14)
+            if floor_text is not None:
+                change = QPushButton("Change...")
+                change.clicked.connect(lambda: on_change_floor and on_change_floor(self))
+                floor_row = QHBoxLayout()
+                floor_label = QLabel(floor_text)
+                floor_label.setWordWrap(True)
+                floor_row.addWidget(floor_label, 1)
+                floor_row.addWidget(change)
+                form.addRow("Shared rules:", floor_row)
+            if self.model is not None:
+                form.addRow("Speech model:", self.model)
+            if on_set_pin is not None:
+                pin = QPushButton("Set editor PIN...")
+                pin.clicked.connect(lambda: on_set_pin(self))
+                form.addRow("Editors:", pin)
+            if self.copy_shared is not None:
+                form.addRow(self.copy_shared)
         links = QLabel(f'<a href="logs">Open the log folder</a> &nbsp;·&nbsp; <a href="config">Open the settings folder</a>')
         links.linkActivated.connect(lambda which: open_path(log_dir() if which == "logs" else config_dir()))
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        theme.primary(buttons.button(QDialogButtonBox.StandardButton.Save))
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        footer = QHBoxLayout()
+        footer.addWidget(links)
+        footer.addStretch(1)
+        footer.addWidget(buttons)
 
         layout = QVBoxLayout(self)
-        layout.addLayout(form)
-        layout.addWidget(QLabel("Leave the reports folder empty to use the project's reports/ folder."))
-        for widget in (self.open_report, self.notifications, self.guess, self.copy_shared, links):
+        layout.setContentsMargins(20, 18, 20, 16)
+        layout.setSpacing(10)
+        layout.addWidget(theme.header("Settings", "How Video QC Bot works on this PC."))
+        for widget in (reports, checks, floor):
             if widget is not None:
                 layout.addWidget(widget)
-        layout.addWidget(buttons)
+        layout.addSpacing(4)
+        layout.addLayout(footer)
 
     def _choose_reports(self) -> None:
         start = self.reports.text() or str(self.default_reports_dir)

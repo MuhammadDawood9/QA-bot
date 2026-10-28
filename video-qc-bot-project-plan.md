@@ -137,13 +137,13 @@ Issue types: `too_short`, `spelling`, `punctuation`, later `color_shift`, `brand
 ### 7.1 Input layer
 
 **Path A: SRT/VTT parser**
-- Library: `pysrt` or `webvtt-py`
+- Own loader (`src/inputs/srt_loader.py`); no library needed
 - Output: caption list directly
 
 **Path B: Burned-in captions via OCR**
 1. Use `ffmpeg` to sample frames (start at 4 fps, tune later).
 2. Crop to the caption region (configurable, e.g. bottom 30% of the frame) to cut noise and cost.
-3. Run OCR on each cropped frame. Options: PaddleOCR or EasyOCR (local, free), or a vision model API for higher accuracy.
+3. Run OCR on each cropped frame with RapidOCR (PaddleOCR models on onnxruntime, local and free).
 4. Group consecutive frames with the same text into one caption, with start and end times.
 5. Ignore frames with no text. Use a small similarity tolerance (fuzzy match) because OCR varies slightly between frames.
 
@@ -168,7 +168,19 @@ Tip: skip unchanged frames by comparing a perceptual hash of the caption region 
 - Strip punctuation and handle contractions before checking
 - Detect likely **OCR misreads** separately in Path B (e.g. `rn` vs `m`, `0` vs `O`) and mark those as lower confidence
 
-### 7.4 Punctuation check (LLM-based)
+### 7.4 Punctuation checks (rule-based first, LLM optional)
+
+**Rule-based (`src/checks/punctuation_style.py`, free, on by default).** Settings under `punctuation_style:` in
+`config.yaml`, overridden per client:
+- A question ending in "." or "!" (a question word plus an auxiliary, or an auxiliary plus a pronoun, so
+  "what I mean is" doesn't count).
+- The client's full-stop style: `never`, or `sentences` (end punctuation before a pause).
+- A comma at the end of a caption; too many commas in one caption.
+- `capitalization.sentence_start_capital` (off by default): a sentence that starts in lowercase.
+- On 27 spelling and punctuation notes from the QC spreadsheet, the free checks catch 23 (16 before this check).
+
+**LLM-based (`src/checks/punctuation.py`, off by default since Phase 1).** It covers what the rules can't: commas
+inside a sentence and apostrophes.
 
 This is where the AI model earns its place. Rules like "where does the full stop go" depend on context, so send captions in **windows**, not one at a time.
 
@@ -281,54 +293,54 @@ Keep per-client overrides in separate files (e.g. `clients/clientA.yaml`) since 
 
 | Purpose | Choice |
 |---|---|
-| Language | Python 3.11+ |
-| Video and frames | `ffmpeg` (via `ffmpeg-python` or subprocess), OpenCV |
-| SRT parsing | `pysrt` |
-| OCR (Path B) | PaddleOCR or EasyOCR; vision model API as an upgrade |
-| Spelling | `pyspellchecker` / `symspellpy` / `language_tool_python` |
-| LLM | Anthropic API (`anthropic` Python SDK) |
+| Language | Python 3.12 (pinned versions in `requirements.txt`) |
+| Video and frames | `ffmpeg` as a subprocess (static build from `imageio-ffmpeg`), `av` for decoding, OpenCV |
+| SRT parsing | Own loader (`src/inputs/srt_loader.py`), no library |
+| OCR (burned-in captions) | `rapidocr_onnxruntime` (PaddleOCR models on onnxruntime, no PyTorch) |
+| Speech-to-text | `faster-whisper` (CTranslate2, CPU) |
+| Spelling | `pyspellchecker` plus glossary and extra-words lists |
+| Word matching | `rapidfuzz` |
+| LLM | Anthropic API (`anthropic` Python SDK), optional |
 | Config | `pyyaml` |
-| Report | Markdown first, then `python-docx` or `reportlab` |
-| CLI | `typer` or `argparse` |
+| Report | Markdown, Word (`python-docx`), CSV |
+| Desktop app | `PySide6-Essentials`, `platformdirs` |
+| Client import | `openpyxl` (workbooks), `pypdf` (style guides) |
+| Delivery checks | ffmpeg (`loudnorm` analysis, streamed samples) and the single video decode; no new packages |
+| CLI | `argparse` |
 | Tests | `pytest` |
 
 ---
 
-## 11. Suggested repo structure
+## 11. Repo structure
 
 ```
 video-qc-bot/
-├── README.md
-├── config.yaml
-├── glossary.txt
-├── rules.yaml
-├── requirements.txt
-├── clients/
-│   └── example_client.yaml
-├── data/
-│   ├── test_videos/
-│   └── clickup_export.csv
+├── config.yaml, color.yaml, rules.yaml, ignore.yaml
+├── glossary.txt, extra_words.txt
+├── requirements.txt, pytest.ini, run_app.pyw
+├── clients/                   # one YAML per client (style, glossary, delivery spec)
+├── data/                      # ground truth and QC exports for the evaluation
+├── docs/
+├── packaging/                 # desktop app builds
+├── scripts/                   # evaluate.py, prepare_data.py, sample makers, mac_check.py, ...
 ├── src/
-│   ├── main.py                # CLI entry point
+│   ├── main.py                # CLI entry point (argparse)
+│   ├── engine.py              # runs the checks; no UI imports
 │   ├── models.py              # Caption, Issue dataclasses
-│   ├── inputs/
-│   │   ├── srt_loader.py
-│   │   └── ocr_loader.py
-│   ├── checks/
-│   │   ├── too_short.py
-│   │   ├── spelling.py
-│   │   └── punctuation.py
-│   ├── report/
-│   │   ├── screenshots.py
-│   │   └── builder.py
+│   ├── config.py, shared.py, machine.py, ignore.py, diagnostics.py, version.py
+│   ├── inputs/                # srt_loader, video_ocr, video_pass (single decode), caption_builder
+│   ├── checks/                # too_short, spelling, capitalization, spacing, punctuation_style,
+│   │                          # punctuation (LLM), transcript, screen_text
+│   ├── audio/                 # audio-edit checks, transcription, clips
+│   ├── video/                 # color checks
+│   ├── delivery/              # spec, sound (loudness, clipping), picture (black/frozen/flash), safe_area
+│   ├── clients/               # client model, store, importers
+│   ├── report/                # builder, docx_writer, screenshots
+│   ├── app/                   # PySide6 desktop mascot app
+│   ├── platform/              # Windows / macOS specific code
 │   └── utils/
-│       ├── cache.py
-│       └── llm.py
-├── reports/
-└── tests/
-    ├── test_too_short.py
-    ├── test_spelling.py
-    └── fixtures/
+├── reports/, cache/, models/
+└── tests/                     # test_*.py, fixtures/
 ```
 
 ---
@@ -1161,3 +1173,27 @@ Not built on purpose: ClickUp sync, creative-direction checks, PDF reports.
   crossfaded. Expect both misses and false alarms on real E2CL episodes until the evaluation is run on them:
   put the episodes and data/ground_truth.csv rows (or the drafted E2CS rows) in place and run
   `python scripts/evaluate.py --checks audio`, then adjust E2CL.yaml (sensitivity first).
+
+### Technical delivery checks (2026-10-27)
+- `src/delivery/`: the exported file itself, not what's in it. Format against what the client ordered
+  (resolution, aspect incl. pixel aspect and phone rotation, frame rate, duration, bitrate, audio format),
+  loudness (integrated LUFS) and true peak from ffmpeg's loudnorm analysis, clipping (runs of full-scale samples,
+  streamed through `stream_ffmpeg()` so `ffmpeg_timeout_sec` applies), black/frozen/flash frames measured during
+  the existing single decode and cached per video, safe area for burned-in captions under TikTok / Reels / Shorts
+  buttons (OCR captions now keep their box; older OCR caches still load without one).
+- Every threshold is in `config.yaml` `delivery:`; a client's own `delivery:` block overrides it. Reels (E2AB,
+  E2OCA, E3ME, E3RK, E7SS, E8C) 9:16 at -14 LUFS; other videos (E2CI, E3JB, E3RP, E8D) 16:9 at -14 LUFS; podcasts
+  (E2CL, E2CS) -16 LUFS; no length limits. The Checks menu and `--no-delivery` switch them off; the evaluator
+  leaves them out.
+- Voice under music is experimental and off by default: on a real two-person podcast it flagged clean speech up
+  to 83 times in 34 minutes.
+
+### Rule-based punctuation (2026-10-27)
+- `punctuation_style` and `capitalization.sentence_start_capital` (see 7.4). A link's dots ("www.example.com") no
+  longer end a sentence; a full stop right after the link still does.
+- Client styles from their own notes: E3RK no full stops, E8D full stops at sentence ends, E2AB no trailing
+  commas, E8C capitalized sentence starts, E7SS "=Mark McGwire" in its glossary.
+- Of 27 spelling and punctuation notes rebuilt as captions, the free checks caught 16; now 23, with no new flags
+  under the default settings on the real caption files here. Commas inside a sentence and apostrophes still need
+  the AI check.
+- Released as version 0.6.0 with the delivery checks and the ffmpeg fixes.

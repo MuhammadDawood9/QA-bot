@@ -23,6 +23,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QGuiApplication
 from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QSystemTrayIcon
 
+from src.app import theme
 from src.app.assets import assets_dir, available_skins, load_skin
 from src.app.choices import choose_client, file_dialog_filter, qc_options, visible_toggles
 from src.app.dialogs import SettingsDialog, open_path, show_error
@@ -51,6 +52,7 @@ class CompanionApp:
         self.status = "Ready: drop a video on me"
 
         self.mascot = MascotWindow(settings)
+        theme.apply(app, self.mascot.skin)          # menus and windows in the mascot's colors
         self.mascot.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.mascot.customContextMenuRequested.connect(
             lambda pos: self.build_menu(self.mascot).exec(self.mascot.mapToGlobal(pos)))
@@ -111,21 +113,31 @@ class CompanionApp:
 
     def build_menu(self, parent=None) -> QMenu:
         """The right-click menu, built fresh each time so it shows the current state."""
-        return self.fill_menu(QMenu(parent))
+        return self.fill_menu(theme.RoundMenu(parent))
 
     def fill_menu(self, menu: QMenu) -> QMenu:
         """The same items for the mascot's right-click menu and the tray icon's menu."""
         if self.floor.shared and (self.floor.last_sync is None or time.time() - self.floor.last_sync > 30):
             self.sync_in_background()
-        version = menu.addAction(f"Video QC Bot {__version__}")
-        version.setEnabled(False)
-        status = menu.addAction(self.status)
-        status.setEnabled(False)
+        # The macOS menu bar shows the tray menu as a native menu, which can't hold widgets.
+        plain = sys.platform == "darwin" and menu is getattr(self, "_tray_menu", None)
+
+        def section(title: str) -> None:
+            if plain:
+                menu.addSeparator()
+            else:
+                theme.menu_section(menu, title)
+
+        if plain:
+            menu.addAction(f"Video QC Bot {__version__}").setEnabled(False)
+            menu.addAction(self.status).setEnabled(False)
+        else:
+            theme.menu_header(menu, f"Video QC Bot {__version__}", self.status, self.mascot.state)
         if self.floor.shared and self.floor.online is False:
             offline = menu.addAction(self.floor.status_text())
             offline.setEnabled(False)
-        menu.addSeparator()
 
+        section("Check")
         menu.addAction("Check a video...", self.pick_video)        # while busy: added to the queue
         menu.addAction("Attach a cue sheet to an episode...", self.attach_cue_sheet_dialog)
         cancel = menu.addAction("Cancel check", self.cancel_check)
@@ -133,6 +145,7 @@ class CompanionApp:
         clear = menu.addAction(f"Clear queue ({len(self.queue)} waiting)", self.clear_queue)
         clear.setEnabled(bool(self.queue))
 
+        section("Setup")
         clients = menu.addMenu("Client")
         guess = clients.addAction("Guess from the file name")
         guess.setCheckable(True)
@@ -169,7 +182,7 @@ class CompanionApp:
             action.setCheckable(True)
             action.setChecked(key == self.mascot.skin.key)
             action.setActionGroup(skin_group)
-            action.triggered.connect(lambda _=False, k=key: self.mascot.set_skin(k))
+            action.triggered.connect(lambda _=False, k=key: self.set_skin(k))
         skins.addSeparator()
         idle_blink = skins.addAction("Blink while idle")
         idle_blink.setCheckable(True)
@@ -184,13 +197,14 @@ class CompanionApp:
             action.setChecked(key not in disabled)
             action.toggled.connect(lambda on, k=key: self.toggle_check(k, on))
 
-        menu.addSeparator()
+        section("Reports and lists")
         last = self.settings.get("last_report")
         menu.addAction("Open last report", self.open_last_report).setEnabled(bool(last) and Path(last).is_file())
         menu.addAction("Open reports folder", self.open_reports_folder)
         word = "Edit" if self.role.editor else "View"
         menu.addAction(f"{word} ignore list", self.open_ignore_list)
         menu.addAction(f"{word} glossary", self.open_glossary)
+        section("App")
         menu.addAction("Settings...", self.open_settings)
         if self.floor.shared:
             if self.editor_unlocked:
@@ -219,7 +233,7 @@ class CompanionApp:
             return None
         tray = QSystemTrayIcon(platform.tray_icon(assets_dir()), self.app)
         tray.setToolTip("Video QC Bot")
-        self._tray_menu = QMenu()
+        self._tray_menu = theme.RoundMenu()
         self._tray_menu.aboutToShow.connect(self._refresh_tray_menu)
         tray.setContextMenu(self._tray_menu)
         tray.activated.connect(self._tray_activated)
@@ -233,6 +247,11 @@ class CompanionApp:
         self._tray_menu.addAction("Show mascot", self.show_mascot)
         self._tray_menu.addSeparator()
         self.fill_menu(self._tray_menu)
+
+    def set_skin(self, key: str) -> None:
+        """A new skin for the mascot, and its colors for the menus and windows."""
+        self.mascot.set_skin(key)
+        theme.apply(self.app, self.mascot.skin)
 
     def _tray_activated(self, reason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:     # a left click on Windows
@@ -837,6 +856,8 @@ def make_application(argv: Sequence[str]) -> QApplication:
     app.setApplicationName(APP_NAME)
     app.setApplicationDisplayName("Video QC Bot")
     app.setQuitOnLastWindowClosed(False)            # the tray keeps it running
+    theme.apply(app)                                # before any window: the setup dialog is styled too
+    theme.follow_os(app)
     platform.after_app_created(app)
     return app
 

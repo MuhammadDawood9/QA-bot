@@ -60,6 +60,7 @@ IDLE_BLINK_MS = (5000, 10000)  # random gap for the optional idle blink
 
 SHADOW_OFFSET = 1.5           # the shadow sits a little lower than the halo
 RING_RADIUS = EDGE + 6        # the progress ring
+RING_WIDTH = 5
 BADGE_HEIGHT = 24
 BADGE_FONT = 13
 
@@ -145,6 +146,7 @@ class GlowWindow(QWidget):
 
     def set_skin(self, skin: Skin) -> None:
         self.glow = skin.glow
+        self.badge = skin.badge                 # the progress ring and the drop outline
         self.ring = skin.shape == "circle"
         self._halos.clear()
         self.update()
@@ -251,13 +253,13 @@ class GlowWindow(QWidget):
         if self.progress is not None:
             rect = QRectF(CENTER - RING_RADIUS, CENTER - RING_RADIUS, 2 * RING_RADIUS, 2 * RING_RADIUS)
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.setPen(QPen(QColor(255, 255, 255, 170), 5))
+            painter.setPen(QPen(QColor(255, 255, 255, 150), RING_WIDTH))
             painter.drawArc(rect, 0, 360 * 16)
-            painter.setPen(QPen(QColor("#2E7DF6"), 5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.setPen(QPen(QColor(self.badge), RING_WIDTH, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
             painter.drawArc(rect, 90 * 16, -int(360 * 16 * self.progress))    # clockwise from the top
         if self.drop_hover:
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.setPen(QPen(QColor("#2E7DF6"), 4, Qt.PenStyle.DashLine))
+            painter.setPen(QPen(QColor(self.badge), 4, Qt.PenStyle.DashLine))
             painter.drawEllipse(QPointF(CENTER, CENTER), CENTER - 6, CENTER - 6)
         painter.end()
 
@@ -515,8 +517,7 @@ class MascotWindow(QWidget):
 
     def _paint_fallback(self, painter: QPainter) -> None:
         """A plain circle with the state's name, when an image file is missing."""
-        colors = {"idle": "#40A0AA", "working": "#4682C8", "done": "#46AA6E", "error": "#D25050"}
-        painter.setBrush(QColor(colors[self.state]))
+        painter.setBrush(QColor(self.skin.glow[self.state]["color"]))
         painter.setPen(QPen(QColor("#1E2832"), 3))
         painter.drawEllipse(QRect(PAD + 8, PAD + 8, SPRITE - 16, SPRITE - 16))
         painter.setPen(QColor("white"))
@@ -528,7 +529,7 @@ class MascotWindow(QWidget):
         font.setPixelSize(BADGE_FONT)
         painter.setFont(font)
         rect = badge_rect(count)
-        painter.setBrush(QColor("#E53935"))
+        painter.setBrush(QColor(self.skin.badge))
         painter.setPen(QPen(QColor("white"), 2.5))
         painter.drawRoundedRect(QRectF(rect).adjusted(1.5, 1.5, -1.5, -1.5), BADGE_HEIGHT / 2 - 1.5, BADGE_HEIGHT / 2 - 1.5)
         painter.setPen(QColor("white"))
