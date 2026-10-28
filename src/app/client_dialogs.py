@@ -19,10 +19,11 @@ from typing import Callable
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
-                               QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QMessageBox,
+                               QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QMessageBox,
                                QPlainTextEdit, QPushButton, QSlider, QSpinBox, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
+from src.app import theme
 from src.clients.importers import IMPORT_EXTENSIONS, claude_allowed, import_file, pdf_text, read_with_claude
 from src.clients.model import (GUIDE_SENSITIVITIES, KINDS, LANGUAGES, MUSIC_PLACES, SFX_PLACES, ClientError,
                                Finding, area_text, build_client, clean_code, finding_text, findings_from_client,
@@ -89,7 +90,7 @@ class ClientDialog(QDialog):
         self.current_findings = findings_from_client(current, store.color_block(code)) if self.editing else []
         single = {f.kind: f.value for f in self.current_findings if f.kind in SINGLE_KINDS}
         self.setWindowTitle(f"Edit client {code}" if self.editing else "Add new client")
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(900)
 
         self.code = QLineEdit(single.get("code", code or ""))
         self.code.setPlaceholderText("e.g. E8D or 8D")
@@ -112,7 +113,7 @@ class ClientDialog(QDialog):
         area_row.addWidget(self.area, 1)
         area_row.addWidget(pick_area)
         self.notes = QPlainTextEdit(str(current.get("notes") or ""))
-        self.notes.setFixedHeight(60)
+        self.notes.setFixedHeight(80)
         # What the user changed: typed values beat values found in files; untouched defaults don't.
         self.touched: set[str] = set(single) if self.editing else set()
         self.name.textEdited.connect(lambda _t: self.touched.add("name"))
@@ -130,7 +131,11 @@ class ClientDialog(QDialog):
         file_buttons.addWidget(remove)
         file_buttons.addStretch(1)
 
-        form = QFormLayout()
+        details = theme.card("Client")
+        form = QFormLayout(details)
+        form.setContentsMargins(12, 4, 12, 8)
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(6)
         form.addRow("Client code:", self.code)
         form.addRow("Display name:", self.name)
         form.addRow("Language:", self.language)
@@ -140,19 +145,35 @@ class ClientDialog(QDialog):
         self.guides = self._guidelines_box(current, config)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        review = buttons.addButton("Review and save...", QDialogButtonBox.ButtonRole.AcceptRole)
+        review = theme.primary(buttons.addButton("Review and save...", QDialogButtonBox.ButtonRole.AcceptRole))
         review.setDefault(True)
         buttons.accepted.connect(self.review_and_save)
         buttons.rejected.connect(self.reject)
 
+        files = theme.card("Optional files")
+        files_layout = QVBoxLayout(files)
+        files_layout.setContentsMargins(12, 4, 12, 8)
+        files_layout.addWidget(theme.hint("Client template .xlsx, QC review workbook .xlsx, .csv, style guide .pdf. "
+                                          "Drop them here. They're read on this PC, and you see everything found "
+                                          "before anything is saved."))
+        self.files.setMaximumHeight(110)
+        files_layout.addWidget(self.files)
+        files_layout.addLayout(file_buttons)
+
         layout = QVBoxLayout(self)
-        layout.addLayout(form)
-        layout.addWidget(self.guides)
-        layout.addWidget(QLabel("<b>Optional files</b> (client template .xlsx, QC review workbook .xlsx, .csv, "
-                                "style guide .pdf). They're read on this PC; you see everything found before "
-                                "anything is saved."))
-        layout.addWidget(self.files)
-        layout.addLayout(file_buttons)
+        layout.setContentsMargins(18, 10, 18, 12)
+        layout.setSpacing(6)
+        layout.addWidget(theme.header(f"Edit client {code}" if self.editing else "Add a new client"))
+        columns = QHBoxLayout()          # side by side: laptop screens are wide but short
+        columns.setSpacing(12)
+        columns.addWidget(details, 1)
+        right = QVBoxLayout()
+        right.setSpacing(6)
+        right.addWidget(self.guides)
+        right.addWidget(files)
+        right.addStretch(1)
+        columns.addLayout(right, 1)
+        layout.addLayout(columns)
         layout.addWidget(buttons)
 
     # --- actions -------------------------------------------------------------------------------
@@ -183,7 +204,8 @@ class ClientDialog(QDialog):
 
     def _guidelines_box(self, current: dict, config: dict) -> QGroupBox:
         """Podcast audio guidelines: where music and effects are placed on purpose, the client's
-        reference audio, and how wide the ignored windows are. Saved only when ticked."""
+        reference audio, and how wide the ignored windows are. Saved only when ticked; folded away
+        while it isn't, so the dialog fits a laptop screen."""
         g = {**(config.get("audio_guidelines") or {}), **(current.get("audio_guidelines") or {})}
         box = QGroupBox("Podcast audio guidelines (music and sound effects placed on purpose)")
         box.setCheckable(True)
@@ -201,18 +223,26 @@ class ClientDialog(QDialog):
         for key in GUIDE_SENSITIVITIES:
             self.guide_sensitivity.addItem(key, key)
         self.guide_sensitivity.setCurrentIndex(max(0, self.guide_sensitivity.findData(g.get("sensitivity", "normal"))))
-        form = QFormLayout(box)
+        content = QWidget()
+        form = QFormLayout(content)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setVerticalSpacing(6)
         for label, boxes in (("Music allowed:", self.music), ("Effects allowed:", self.sfx)):
-            row = QHBoxLayout()
-            for cb in boxes.values():
-                row.addWidget(cb)
-            row.addStretch(1)
-            form.addRow(label, row)
+            grid = QGridLayout()
+            grid.setHorizontalSpacing(14)
+            for i, cb in enumerate(boxes.values()):
+                grid.addWidget(cb, i // 3, i % 3)
+            grid.setColumnStretch(3, 1)
+            form.addRow(label, grid)
         ref_row = QHBoxLayout()
         ref_row.addWidget(self.reference, 1)
         ref_row.addWidget(browse)
         form.addRow("Reference audio:", ref_row)
         form.addRow("Ignore around them:", self.guide_sensitivity)
+        outer = QVBoxLayout(box)
+        outer.setContentsMargins(12, 4, 12, 8)
+        outer.addWidget(content)
+        theme.fold(box, content)
         return box
 
     def _choose_reference(self) -> None:
@@ -339,7 +369,7 @@ class ReviewDialog(QDialog):
         row.addStretch(1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        save = buttons.addButton("Save client", QDialogButtonBox.ButtonRole.AcceptRole)
+        save = theme.primary(buttons.addButton("Save client", QDialogButtonBox.ButtonRole.AcceptRole))
         save.setDefault(True)
         buttons.accepted.connect(self.save)
         buttons.rejected.connect(self.reject)
